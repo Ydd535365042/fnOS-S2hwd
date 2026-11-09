@@ -1,0 +1,16 @@
+[Unit]
+Description=Set device hostname (fnOS-S2)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/set-hostname.sh
+RemainAfterExit=yes
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

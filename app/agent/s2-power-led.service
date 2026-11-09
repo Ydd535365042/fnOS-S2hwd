@@ -1,0 +1,11 @@
+[Unit]
+Description=S2 电源灯配置开机应用
+After=power-led-solid.service multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/s2-power-led-apply.sh
+
+[Install]
+WantedBy=multi-user.target

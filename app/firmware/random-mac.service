@@ -1,0 +1,17 @@
+[Unit]
+Description=Persistent random MAC address per device
+Documentation=man:systemd.link(5)
+DefaultDependencies=no
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/random-mac.sh
+RemainAfterExit=yes
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

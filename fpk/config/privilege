@@ -1,0 +1,7 @@
+{
+    "defaults": {
+        "run-as": "root"
+    },
+    "username": "fnOS-S2",
+    "groupname": "fnOS-S2"
+}

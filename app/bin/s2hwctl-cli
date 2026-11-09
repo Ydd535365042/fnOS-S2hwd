@@ -1,0 +1,40 @@
+#!/bin/bash
+# s2hwctl-cli —— S2 硬件控制台命令行入口（等价于页面上的按钮）
+#   s2hwctl-cli status
+#   s2hwctl-cli beep [ms]
+#   s2hwctl-cli fan auto | fan manual <0-15>
+#   s2hwctl-cli sata off|green|red|amber|release
+#   s2hwctl-cli led <led名> on|off|blink
+set -u
+if [ "$(id -u)" != "0" ]; then
+    echo "需要 root 权限（硬件操作）： sudo s2hwctl-cli $*"
+    exit 1
+fi
+SELF_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+SERVER_DIR="${SELF_DIR}/server"
+[ -d "$SERVER_DIR" ] || SERVER_DIR="/var/apps/fnOS-S2/target/server"
+PY="$(command -v python3 || command -v python)"
+[ -n "$PY" ] || { echo "未找到 python3"; exit 1; }
+
+op="status"; params="{}"
+case "${1:-status}" in
+    status) op="status" ;;
+    beep)   op="beep_test";     params="{\"ms\":${2:-280}}" ;;
+    fan)    op="set_fan";       params="{\"mode\":\"${2:-auto}\",\"level\":${3:-6},\"persist\":true}" ;;
+    sata)   op="set_sata_led";  params="{\"present_mode\":\"${2:-off}\"}" ;;
+    led)    op="set_power_led"; params="{\"led\":\"${2:-}\",\"mode\":\"${3:-on}\",\"persist\":true}" ;;
+    *)      echo "未知命令: $1"; exit 1 ;;
+esac
+
+"$PY" - "$op" "$params" "$SERVER_DIR" <<'PYEOF'
+import json, os, sys
+op, params, sdir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, sdir)
+os.environ.setdefault('S2_VAR_DIR', '/var/apps/fnOS-S2/var')
+import hwctl
+ok, data = hwctl.dispatch(op, json.loads(params))
+if isinstance(data, str):
+    print(('OK  ' if ok else 'ERR ') + data)
+else:
+    print(('OK  ' if ok else 'ERR ') + json.dumps(data, ensure_ascii=False)[:2000])
+PYEOF

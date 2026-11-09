@@ -1,0 +1,9 @@
+#!/bin/bash
+# 卸载前：停止应用并移除开机灯光服务
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+systemctl stop s2-power-led.service >/dev/null 2>&1
+systemctl disable s2-power-led.service >/dev/null 2>&1
+rm -f /etc/systemd/system/s2-power-led.service
+rm -f /usr/local/bin/s2hwctl-cli
+systemctl daemon-reload >/dev/null 2>&1
+exit 0

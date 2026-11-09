@@ -1,0 +1,18 @@
+[Unit]
+Description=Re-assert fixed per-device random MAC after network is up
+Documentation=man:systemd.link(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 复用 random-mac.sh：已固定 MAC 时只复用、不重新生成，并在网络就绪后再套用一次，
+# 确保 fnOS 自身网络配置若改过 MAC，最终仍是我们固定的值。
+ExecStart=/usr/local/sbin/random-mac.sh
+RemainAfterExit=yes
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+#!/bin/bash
+# 卸载后：按向导选择决定是否清理数据
+set -u
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/${TRIM_APPNAME:-fnOS-S2}/var}"
+rm -f /usr/local/sbin/s2-power-led-apply.sh
+if [ "${wizard_data_action:-keep}" = "delete" ]; then
+    # 同 install_callback：变量可能没注入，set -u 下不能直接展开。
+    # 空串交给 rm -f 无害（实测 rc=0、无输出），VAR_DIR 照常清理。
+    SHARE_DIR="${TRIM_DATA_SHARE_PATHS:-}"
+    rm -rf "${VAR_DIR}" "${SHARE_DIR}" 2>/dev/null
+fi
+exit 0

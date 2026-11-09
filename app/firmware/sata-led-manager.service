@@ -1,0 +1,17 @@
+[Unit]
+Description=SATA LED manager (idle/activity/error)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/sata-led-manager.sh
+Restart=always
+RestartSec=1
+# 非关键指示灯服务：降权，避免和 fan-control / 磁盘 IO 抢资源
+Nice=10
+CPUWeight=20
+IOSchedulingClass=idle
+MemoryHigh=32M
+
+[Install]
+WantedBy=multi-user.target

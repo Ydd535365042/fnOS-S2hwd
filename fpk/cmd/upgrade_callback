@@ -1,0 +1,29 @@
+#!/bin/bash
+# 升级后：恢复脚本、重装机服务
+set -u
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/${APP_NAME}/var}"
+DEST="${TRIM_APPDEST:-/var/apps/${APP_NAME}/target}"
+BK="$(cat "${VAR_DIR}/last_backup" 2>/dev/null || true)"
+if [ -n "$BK" ] && [ -d "$BK/scripts" ]; then
+    cp -a "$BK/scripts/." "$VAR_DIR/scripts/" 2>/dev/null
+fi
+if systemctl list-unit-files 2>/dev/null | grep -q '^s2-power-led.service'; then
+    install -m 755 "${DEST}/agent/s2-power-led-apply.sh" /usr/local/sbin/s2-power-led-apply.sh 2>/dev/null
+    install -m 644 "${DEST}/agent/s2-power-led.service" /etc/systemd/system/s2-power-led.service 2>/dev/null
+    systemctl daemon-reload >/dev/null 2>&1
+fi
+
+# 把新版的硬件脚本和服务文件部署到系统。以前升级只换了网页程序，
+# /usr/local 和 /etc/systemd 下还是旧版脚本 —— 新版修的固件问题只有全新安装才拿得到。
+# deploy.sh 不覆盖用户已有的配置（风扇曲线、指示灯、定时开关机），始终 exit 0。
+FIRMWARE_DIR=""
+for d in "${DEST}/firmware" "${DEST}/target/firmware" \
+         "/var/apps/${APP_NAME}/firmware" "/var/apps/${APP_NAME}/target/firmware"; do
+    if [ -f "$d/deploy.sh" ]; then FIRMWARE_DIR="$d"; break; fi
+done
+if [ -n "$FIRMWARE_DIR" ]; then
+    echo "==> 升级：重新部署硬件脚本 $FIRMWARE_DIR" >> "$VAR_DIR/server.log" 2>/dev/null
+    bash "$FIRMWARE_DIR/deploy.sh" "$FIRMWARE_DIR" >> "$VAR_DIR/server.log" 2>&1 || true
+fi
+exit 0

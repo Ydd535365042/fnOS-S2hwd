@@ -1,0 +1,12 @@
+[Unit]
+Description=Self-heal hourly check (repair without reboot)
+Documentation=file:/usr/local/sbin/selfheal-check.sh
+After=local-fs.target
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/selfheal-check.sh --no-reboot
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal

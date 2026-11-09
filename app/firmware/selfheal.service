@@ -1,0 +1,17 @@
+[Unit]
+Description=Self-heal: verify and restore customized fnOS features
+Documentation=file:/usr/local/sbin/selfheal-check.sh
+After=local-fs.target
+RequiresMountsFor=/boot
+Before=boot-version-guard.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/selfheal-check.sh
+TimeoutStartSec=600
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

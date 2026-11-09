@@ -1,0 +1,13 @@
+
+[Unit]
+Description=Fan Control (CPU + HDD temperature, auto/manual)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fan-control.sh
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

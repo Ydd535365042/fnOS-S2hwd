@@ -1,0 +1,26 @@
+[Unit]
+Description=Boot version guard: reinstall & reboot on fnOS/kernel version change
+After=local-fs.target
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/boot-version-guard.sh
+
+# 1) 安装脚本要跑几分钟，默认 90s 启动超时会在「重启之前」把整个脚本杀掉
+TimeoutStartSec=infinity
+
+# 2) 不杀本服务残留进程：主脚本在确认关机排期后会自己 exit 0 让路，
+#    这里只在极端情况（硬兜底路径仍在执行）下才需要保护它。
+KillMode=none
+
+# 3) 停止阶段别拖住关机流程；主脚本已主动退出，正常走不到超时
+TimeoutStopSec=5
+TimeoutStopFailureMode=terminate
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

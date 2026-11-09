@@ -1,0 +1,12 @@
+[Unit]
+Description=S2 定时关机执行（关机前先重设 RTC 唤醒闹钟）
+Documentation=man:poweroff(8)
+
+[Service]
+Type=oneshot
+# 第一行不是可有可无的：RTC 闹钟是一次性的，触发那一刻就被内核清掉。
+# 如果这次闹钟触发时设备是开着的（该关机没关成、或用户一直在用），
+# 之后就没有人再设下一次 —— 定时开机会永久失效。所以关机前再算一遍。
+# arm-next 永远返回 0，不会因为 RTC 设不上而拦住关机。
+ExecStart=/usr/local/sbin/s2-power-schedule.sh arm-next
+ExecStart=/sbin/poweroff

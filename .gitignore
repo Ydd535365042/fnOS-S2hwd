@@ -1,0 +1,6 @@
+# 构建产物 / 临时文件
+*.fpk.tmp
+__pycache__/
+*.pyc
+Thumbs.db
+fpk/app.tgz

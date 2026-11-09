@@ -1,0 +1,43 @@
+#!/bin/bash
+# 安装前：环境检查（不要阻断安装，只做提示 / 关键依赖校验）
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+LOG_OUT="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+PY=""
+for p in python3 /usr/bin/python3 python; do
+    if command -v "$p" >/dev/null 2>&1; then PY="$(command -v "$p")"; break; fi
+done
+if [ -z "$PY" ]; then
+    echo "系统中未找到 python3，S2 硬件控制台无法运行。" > "$LOG_OUT"
+    exit 1
+fi
+
+PORT="${wizard_port:-18899}"
+case "$PORT" in
+    ''|*[!0-9]*) echo "端口必须是数字：${PORT}" > "$LOG_OUT"; exit 1 ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "端口范围需在 1-65535 之间：${PORT}" > "$LOG_OUT"
+    exit 1
+fi
+
+# 开了口令开关却没填 / 填了非法字符：在这里拦下。
+# 以前放行到 install_callback，那边会把非法值静默清空 —— 用户以为设了口令，实际装成了无口令。
+if [ "${wizard_enable_token:-false}" = "true" ]; then
+    TOKEN="${wizard_token:-}"
+    if [ -z "$TOKEN" ]; then
+        echo "已开启访问口令，但没有填写口令。请填写 6–64 位口令，或关闭「启用访问口令」。" > "$LOG_OUT"
+        exit 1
+    fi
+    case "$TOKEN" in
+        *[!A-Za-z0-9._~+-]*)
+            echo "访问口令只能用字母、数字和 - _ . ~ + ，不要含空格或引号。" > "$LOG_OUT"
+            exit 1 ;;
+    esac
+    if [ "${#TOKEN}" -lt 6 ] || [ "${#TOKEN}" -gt 64 ]; then
+        echo "访问口令需要 6–64 位。" > "$LOG_OUT"
+        exit 1
+    fi
+fi
+
+exit 0

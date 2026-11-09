@@ -1,0 +1,96 @@
+#!/bin/bash
+# 安装后：写 settings.conf、生成预置修复脚本、部署全部硬件定制脚本、按需安装开机灯光服务
+set -u
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+ETC_DIR="${TRIM_PKGETC:-/var/apps/${APP_NAME}/etc}"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/${APP_NAME}/var}"
+DEST="${TRIM_APPDEST:-/var/apps/${APP_NAME}/target}"
+# fnOS 正常安装会注入 TRIM_DATA_SHARE_PATHS（config/resource 声明了 data-share）。
+# 万一没注入，set -u 也不能把整个安装回调打断：共享目录里的 README 只是便利提示，
+# 缺了它 settings.conf / 出厂脚本 / 固件部署仍必须照常完成。
+SHARE_DIR="${TRIM_DATA_SHARE_PATHS:-}"
+SHARE_DIR="${SHARE_DIR%%:*}"
+
+mkdir -p "$ETC_DIR" "$VAR_DIR/scripts" "$VAR_DIR/jobs" "$VAR_DIR/logs"
+
+# ---- settings.conf：端口的唯一权威来源 ----
+PORT="${wizard_port:-${TRIM_SERVICE_PORT:-18899}}"
+TOKEN=""
+if [ "${wizard_enable_token:-false}" = "true" ]; then TOKEN="${wizard_token:-}"; fi
+# 与 config_callback 同一道兜底：settings.conf 是给 cmd/main 用 `.` 加载的，
+# 向导 pattern 只约束 UI，绕过向导传进来的空格 / 引号 / $() 不能写进文件。
+case "$TOKEN" in
+    *[!A-Za-z0-9._~+-]*) TOKEN="" ;;
+esac
+BOOT_SVC="${wizard_install_boot_service:-true}"
+{
+    echo "# S2 硬件控制台 运行时配置（由 install_callback / config_callback 写入）"
+    echo "PORT=${PORT}"
+    echo "TOKEN=${TOKEN}"
+    echo "INSTALL_BOOT_SERVICE=${BOOT_SVC}"
+} > "${ETC_DIR}/settings.conf"
+chmod 600 "${ETC_DIR}/settings.conf"
+
+# ---- 定位 fpk 内嵌的硬件脚本目录（兼容新旧 fnOS 的 APPDEST 布局）----
+FIRMWARE_DIR=""
+if   [ -d "${DEST}/firmware" ]; then        FIRMWARE_DIR="${DEST}/firmware"
+elif [ -d "${DEST}/target/firmware" ]; then FIRMWARE_DIR="${DEST}/target/firmware"
+elif [ -d "/var/apps/${APP_NAME}/firmware" ]; then        FIRMWARE_DIR="/var/apps/${APP_NAME}/firmware"
+elif [ -d "/var/apps/${APP_NAME}/target/firmware" ]; then FIRMWARE_DIR="/var/apps/${APP_NAME}/target/firmware"
+fi
+
+# ---- 预置出厂默认脚本 ----
+# 以前这里用 heredoc 把 7 个脚本各写了一遍，页面想「恢复默认」就得在服务端
+# 再抄一遍 —— 两份迟早漂移：改了安装回调的修复命令，页面加载出来的还是旧的。
+# 现在事实来源只有 app/server/default_scripts/ 这一份：安装时复制，
+# 页面点「加载默认脚本」时服务端也复制同一批文件。
+S="$VAR_DIR/scripts"
+DEFAULT_SCRIPTS=""
+for d in "$DEST/server/default_scripts" "$DEST/default_scripts" \
+         "/var/apps/${APP_NAME}/server/default_scripts"; do
+    if [ -d "$d" ]; then DEFAULT_SCRIPTS="$d"; break; fi
+done
+
+if [ -n "$DEFAULT_SCRIPTS" ]; then
+    cp -f "$DEFAULT_SCRIPTS"/*.sh "$S/" 2>/dev/null
+    chmod +x "$S"/*.sh 2>/dev/null
+    echo "==> 已预置出厂默认脚本: $DEFAULT_SCRIPTS" >> "$VAR_DIR/server.log" 2>/dev/null
+else
+    echo "!! 未找到默认脚本目录，脚本库初始为空（页面可点「加载默认脚本」）" >> "$VAR_DIR/server.log" 2>/dev/null
+fi
+
+# ---- 安装即部署：把全部硬件定制脚本落到系统并启用服务 ----
+if [ -n "$FIRMWARE_DIR" ] && [ -f "$FIRMWARE_DIR/deploy.sh" ]; then
+    echo "==> 部署硬件定制脚本: $FIRMWARE_DIR" >> "$VAR_DIR/server.log" 2>/dev/null
+    bash "$FIRMWARE_DIR/deploy.sh" "$FIRMWARE_DIR" >> "$VAR_DIR/server.log" 2>&1 || \
+        echo "!! deploy.sh 返回非零（已忽略，详见 /var/log/s2hwctl-deploy.log）" >> "$VAR_DIR/server.log" 2>/dev/null
+else
+    echo "!! 未找到 fpk 内嵌硬件脚本目录，跳过自动部署（可手动在「脚本修复」部署）" >> "$VAR_DIR/server.log" 2>/dev/null
+fi
+
+# ---- 共享目录里放一份 README，方便用户从「文件管理 → 应用文件」丢脚本进来 ----
+if [ -n "$SHARE_DIR" ] && [ -d "$SHARE_DIR" ]; then
+    cat > "$SHARE_DIR/把脚本拖到这里.txt" <<'EOT'
+把 .sh 脚本复制到本目录，即可在 S2 硬件控制台的「脚本修复」页面中看到并执行。
+也可直接在页面里把脚本拖进虚线框上传。
+EOT
+fi
+
+# ---- 开机自动套用电源灯配置 ----
+# v1.1.4 起电源灯由 power-led-net（网络状态灯：有链路绿灯常亮、无链路红灯闪烁）常驻接管；
+# 仅当部署失败（power-led-net 未落盘）时，才安装旧的 s2-power-led 开机套用服务作兜底。
+if [ "$BOOT_SVC" = "true" ] && [ ! -f /etc/systemd/system/power-led-net.service ]; then
+    if [ -d /run/systemd/system ] || [ -d /lib/systemd/system ]; then
+        echo "==> power-led-net 未部署，回退安装 s2-power-led 兜底" >> "$VAR_DIR/server.log" 2>/dev/null
+        install -m 755 "${DEST}/agent/s2-power-led-apply.sh" /usr/local/sbin/s2-power-led-apply.sh 2>/dev/null
+        install -m 644 "${DEST}/agent/s2-power-led.service" /etc/systemd/system/s2-power-led.service 2>/dev/null
+        systemctl daemon-reload >/dev/null 2>&1
+        systemctl enable s2-power-led.service >/dev/null 2>&1
+        systemctl start s2-power-led.service >/dev/null 2>&1
+    fi
+fi
+
+# ---- CLI 软链由 resource/usr-local-linker 处理，这里兜底一次 ----
+[ -f "${DEST}/bin/s2hwctl-cli" ] && install -m 755 "${DEST}/bin/s2hwctl-cli" /usr/local/bin/s2hwctl-cli 2>/dev/null
+
+exit 0

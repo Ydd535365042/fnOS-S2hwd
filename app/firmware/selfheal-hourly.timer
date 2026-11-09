@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly self-heal check for customized fnOS features
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Persistent=true
+Unit=selfheal-hourly.service
+
+[Install]
+WantedBy=timers.target

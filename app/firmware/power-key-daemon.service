@@ -1,0 +1,19 @@
+[Unit]
+Description=Power key: long press 3s -> beep + poweroff
+Documentation=file:/usr/local/sbin/power-key-daemon.py
+After=systemd-udevd.service systemd-logind.service local-fs.target
+Before=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/power-key-daemon.py
+Restart=always
+RestartSec=3
+KillMode=process
+StandardOutput=journal
+StandardError=journal
+# 关机按键守护：不降权、不限内存。它平时阻塞在 input 事件上几乎不占 CPU，
+# 降权省不下什么，反而可能让高负载时的长按关机变慢。
+
+[Install]
+WantedBy=multi-user.target

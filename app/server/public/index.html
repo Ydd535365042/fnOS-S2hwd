@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 手机浏览器：地址栏配色跟主题；iOS 不把端口号、温度之类的数字识别成电话号码；
+     加到主屏幕后以全屏应用打开，状态栏透明压在顶栏上（顶栏已用 safe-area-inset-top 让位） -->
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171c23" media="(prefers-color-scheme: dark)">
+<meta name="format-detection" content="telephone=no,email=no,address=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="fnOS-S2">
+<meta name="color-scheme" content="light dark">
+<title>NIX fnOS-S2 · 硬件控制台</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%232e78ff'/%3E%3Cstop offset='1' stop-color='%231034a8'/%3E%3C/linearGradient%3E%3CclipPath id='c'%3E%3Crect x='25' y='22' width='50' height='56' rx='6'/%3E%3C/clipPath%3E%3C/defs%3E%3Crect width='100' height='100' rx='23' fill='url(%23g)'/%3E%3Cpath d='M25 22 L40 22 L75 78 L60 78 Z' fill='%23fff' fill-opacity='0.62' clip-path='url(%23c)'/%3E%3Crect x='25' y='22' width='15' height='56' rx='6' fill='%23fff'/%3E%3Ccircle cx='32.5' cy='69' r='3.3' fill='%2334e68c'/%3E%3Crect x='60' y='22' width='15' height='56' rx='6' fill='%23fff'/%3E%3Ccircle cx='67.5' cy='69' r='3.3' fill='%2334e68c'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 图标精灵 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-nix" viewBox="0 0 100 100">
+    <clipPath id="nix-c"><rect x="25" y="22" width="50" height="56" rx="6"/></clipPath>
+    <path d="M25 22 L40 22 L75 78 L60 78 Z" fill="currentColor" fill-opacity=".62" clip-path="url(#nix-c)"/>
+    <rect x="25" y="22" width="15" height="56" rx="6" fill="currentColor"/>
+    <rect x="60" y="22" width="15" height="56" rx="6" fill="currentColor"/>
+    <circle cx="32.5" cy="69" r="3.6" fill="#34e68c"/>
+    <circle cx="67.5" cy="69" r="3.6" fill="#34e68c"/>
+  </symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24">
+    <path d="M12 2.5 L19.5 5.25 V12 C19.5 16.3 16 19.8 12 21.3 C8 19.8 4.5 16.3 4.5 12 V5.25 Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <rect x="7.6" y="9" width="8.8" height="2.4" rx="1.2" fill="currentColor"/>
+    <rect x="7.6" y="13" width="8.8" height="2.4" rx="1.2" fill="currentColor" opacity=".55"/>
+  </symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 14l4-4"/><circle cx="12" cy="18" r="1.4"/></symbol>
+  <symbol id="i-fan" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.2"/><path d="M12 9.8c0-3 1-4.8 3-4.8s2.6 2.6.6 4.4c-1.3 1.2-2.6 1.5-3.6.4z"/><path d="M14.2 12c3 0 4.8 1 4.8 3s-2.6 2.6-4.4.6c-1.2-1.3-1.5-2.6-.4-3.6z"/><path d="M12 14.2c0 3-1 4.8-3 4.8s-2.6-2.6-.6-4.4c1.3-1.2 2.6-1.5 3.6-.4z"/><path d="M9.8 12c-3 0-4.8-1-4.8-3s2.6-2.6 4.4-.6c1.2 1.3 1.5 2.6.4 3.6z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.7-6M20 4.5V10h-5.5"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.8v2M12 19.2v2M2.8 12h2M19.2 12h2M5.5 5.5l1.4 1.4M17.1 17.1l1.4 1.4M18.5 5.5l-1.4 1.4M6.9 17.1l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></symbol>
+  <symbol id="i-auto" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3L12 4z"/><path d="M12 10v4M12 17h.01"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5V4.5m0 0L8 8.5M12 4.5l4 4"/><path d="M4.5 15v3.5a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5V15"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.5l10 6.5-10 6.5z"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 6.5V5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15h1"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13.5 3.5H7a1.5 1.5 0 0 0-1.5 1.5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5l-5-5z"/><path d="M13.5 3.5v5h5"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 8.5h13M13.5 5l3.5 3.5-3.5 3.5M20 15.5H7M10.5 12L7 15.5l3.5 3.5"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M14.5 5.5L8 12l6.5 6.5"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7.5h8M17.5 7.5H20M4 16.5h2.5M12 16.5h8"/><circle cx="14.75" cy="7.5" r="2.25"/><circle cx="9.25" cy="16.5" r="2.25"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 4v8"/><path d="M7.5 6.8a7.5 7.5 0 1 0 9 0"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 2H5z"/><path d="M10 20.5a2 2 0 0 0 4 0"/></symbol></svg>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark"><svg aria-hidden="true"><use href="#i-nix"/></svg></span>
+        <span class="brand-txt">
+          <span class="brand-name"><span class="brand-org">NIX</span><em>fnOS-S2</em></span>
+          <span class="brand-sub">硬件控制台</span>
+        </span>
+      </div>
+      <nav class="views" aria-label="主导航">
+        <button class="nav-item" data-view="overview" aria-current="page" title="实时状态、温度趋势、设备信息与访问端口（按 1）">
+          <svg aria-hidden="true"><use href="#i-gauge"/></svg>概览
+        </button>
+        <button class="nav-item" data-view="control" title="脚本库、执行日志与已安装模块（按 2）">
+          <svg aria-hidden="true"><use href="#i-sliders"/></svg>控制
+        </button>
+      </nav>
+      <span class="spacer"></span>
+      <span class="chip neutral" id="top-status"><i class="dot live"></i>连接中…</span>
+      <span class="top-meta" id="top-meta">
+        <time class="clock" id="top-clock" title="设备时间">—</time>
+        <span class="uptime is-na" id="top-uptime" title="设备运行时长"><span class="up-lbl">已运行</span><b id="top-uptime-v">—</b></span>
+      </span>
+      <div class="bell-wrap">
+        <button class="icon-btn bell" id="btn-bell" type="button" title="通知" aria-label="通知，没有未读" aria-haspopup="dialog" aria-expanded="false" aria-controls="ntf-panel">
+          <svg aria-hidden="true"><use href="#i-bell"/></svg><span class="bell-badge" id="bell-badge" hidden></span>
+        </button>
+        <section class="ntf-panel" id="ntf-panel" role="dialog" aria-label="通知" hidden>
+          <header class="ntf-hd">
+            <h2>通知</h2>
+            <span class="ntf-sum" id="ntf-sum"></span>
+            <span class="spacer"></span>
+            <button class="btn sm ghost" id="ntf-readall" type="button">全部已读</button>
+          </header>
+          <div class="ntf-active" id="ntf-active" hidden></div>
+          <ol class="ntf-list" id="ntf-list" aria-live="polite"></ol>
+          <footer class="ntf-ft">
+            <label class="ntf-sys"><input type="checkbox" id="ntf-sys"> 新告警时弹系统通知</label>
+            <button class="btn sm ghost" id="ntf-clear" type="button">清空记录</button>
+          </footer>
+        </section>
+      </div>
+      <button class="icon-btn" id="btn-theme" title="切换主题" aria-label="切换主题"><svg id="theme-icon"><use href="#i-moon"/></svg></button>
+      <button class="icon-btn" id="btn-refresh" title="刷新数据" aria-label="刷新数据"><svg aria-hidden="true"><use href="#i-refresh"/></svg></button>
+    </div>
+  </header>
+
+  <main class="content">
+      <section class="view is-active" data-view="overview">
+        <div class="grid">
+
+          <!-- 关键指标：指针仪表盘。由 app.js 的 renderGauges() 填充并逐次重绘 -->
+          <div class="gbar col-12" id="gbar"></div>
+
+          <div class="card col-8">
+            <div class="card-hd">
+              <h2>温度趋势</h2>
+              <span class="sub" id="chart-sub">近 20 分钟 · 每 10 秒采样</span>
+              <div class="spacer"></div>
+              <!-- 采样间隔：网页多久向设备取一次读数（仪表、趋势图、硬件卡一起跟着变）。
+                   只影响这台浏览器（存 localStorage），手机和电脑可以各设各的；设备上风扇控制自己 3 秒一测，不受影响。
+                   趋势图固定 121 个点，所以间隔越长、图里覆盖的时间越长（10 秒 = 20 分钟，60 秒 = 2 小时）。 -->
+              <div class="seg seg-poll" id="poll-seg" role="group" aria-label="采样间隔">
+                <button data-poll="1" aria-pressed="false" class="poll-live" title="每秒采样一次（图覆盖 2 分钟）"><i class="live-dot" aria-hidden="true"></i>实时</button>
+                <button data-poll="3" aria-pressed="false" title="每 3 秒采样一次（图覆盖 6 分钟）">3秒</button>
+                <button data-poll="5" aria-pressed="false" title="每 5 秒采样一次（图覆盖 10 分钟）">5秒</button>
+                <button data-poll="10" aria-pressed="true" title="每 10 秒采样一次（图覆盖 20 分钟，默认）">10秒</button>
+                <button data-poll="30" aria-pressed="false" title="每 30 秒采样一次（图覆盖 1 小时）">30秒</button>
+                <button data-poll="60" aria-pressed="false" title="每 60 秒采样一次（图覆盖 2 小时）">60秒</button>
+              </div>
+              <div class="legend">
+                <span><i style="background:var(--accent)"></i>处理器</span>
+                <span><i style="background:var(--teal)"></i>硬盘</span>
+                <span><i style="background:var(--violet)"></i>转速</span>
+              </div>
+            </div>
+            <div class="chart" id="chart">
+              <svg id="chart-svg" role="img" aria-label="处理器与硬盘温度、风扇转速趋势图"></svg>
+              <div class="cross" id="chart-cross"></div>
+              <div class="tip" id="chart-tip"></div>
+            </div>
+          </div>
+
+          <!-- 风扇温控：正面切档位，背面调四锚点曲线（翻面逻辑沿用 app.js，结构不变） -->
+          <div class="card col-4 flip" id="ov-fan">
+            <div class="flip-inner">
+              <div class="flip-face flip-front">
+                <div class="card-hd">
+                  <h2>风扇温控</h2>
+                  <div class="spacer"></div>
+                  <div class="seg seg-fan" id="ov-fan-mode">
+                    <button data-profile="quiet" aria-pressed="true">静音</button>
+                    <button data-profile="performance" aria-pressed="false">性能</button>
+                    <button data-profile="custom" aria-pressed="false">自定义</button>
+                  </div>
+                </div>
+                <div class="fan-read">
+                  <span class="big"><span id="ov-fan-duty">--</span><small>%</small></span>
+                  <span class="fan-src" id="ov-fan-source">等待采样</span>
+                  <svg class="fan-svg" id="ov-fan-svg" viewBox="0 0 100 100" role="img" aria-label="风扇停转">
+                    <circle class="ring" cx="50" cy="50" r="46"/>
+                    <g class="blade" stroke-linejoin="round">
+                      <path d="M59 50Q73.89 57.35 80.47 77.43A41 41 0 0 1 32.03 86.85Q47.17 74.84 52.48 58.65Z"/>
+                      <path d="M45.5 57.79Q31.69 67.02 11.01 62.67A41 41 0 0 1 27.07 16.01Q29.9 35.13 41.27 47.82Z"/>
+                      <path d="M45.5 42.21Q44.42 25.63 58.52 9.9A41 41 0 0 1 90.9 47.14Q72.93 40.03 56.25 43.53Z"/>
+                    </g>
+                    <circle class="hub" cx="50" cy="50" r="8"/>
+                  </svg>
+                </div>
+                <div class="bar"><span class="fill" id="ov-fan-fill" style="width:0%"></span></div>
+                <p class="help">四锚点温控曲线 · 起转 30%、全速 100% 固定</p>
+              </div>
+
+              <div class="flip-face flip-back">
+                <div class="card-hd">
+                  <h2>温控曲线</h2>
+                  <span class="sub">四锚点</span>
+                  <div class="spacer"></div>
+                  <button class="btn sm ghost" id="curve-back" title="返回"><svg aria-hidden="true"><use href="#i-back"/></svg>返回</button>
+                </div>
+                <table class="curve">
+                  <thead><tr><th></th><th>起转点</th><th>第二点</th><th>第三点</th><th>全速点</th></tr></thead>
+                  <tbody>
+                    <tr data-curve="hdd">
+                      <td>硬盘 ℃</td>
+                      <td><input type="number" data-k="t1" value="42" min="30" max="55" aria-label="硬盘起转温度"></td>
+                      <td><input type="number" data-k="t2" value="48" min="30" max="55" aria-label="硬盘第二锚点温度"></td>
+                      <td><input type="number" data-k="t3" value="52" min="30" max="55" aria-label="硬盘第三锚点温度"></td>
+                      <td><input type="number" data-k="t4" value="55" min="30" max="55" aria-label="硬盘全速温度"></td>
+                    </tr>
+                    <tr data-curve="hdd">
+                      <td>转速 %</td>
+                      <td class="fixed" title="起转转速固定 30%"><span>30</span></td>
+                      <td><input type="number" data-k="d2" value="30" min="30" max="100" aria-label="硬盘第二锚点转速"></td>
+                      <td><input type="number" data-k="d3" value="70" min="30" max="100" aria-label="硬盘第三锚点转速"></td>
+                      <td class="fixed" title="全速固定 100%"><span>100</span></td>
+                    </tr>
+                    <tr data-curve="cpu">
+                      <td>处理器 ℃</td>
+                      <td><input type="number" data-k="t1" value="60" min="40" max="80" aria-label="处理器起转温度"></td>
+                      <td><input type="number" data-k="t2" value="65" min="40" max="80" aria-label="处理器第二锚点温度"></td>
+                      <td><input type="number" data-k="t3" value="72" min="40" max="80" aria-label="处理器第三锚点温度"></td>
+                      <td><input type="number" data-k="t4" value="80" min="40" max="80" aria-label="处理器全速温度"></td>
+                    </tr>
+                    <tr data-curve="cpu">
+                      <td>转速 %</td>
+                      <td class="fixed" title="起转转速固定 30%"><span>30</span></td>
+                      <td><input type="number" data-k="d2" value="30" min="30" max="100" aria-label="处理器第二锚点转速"></td>
+                      <td><input type="number" data-k="d3" value="70" min="30" max="100" aria-label="处理器第三锚点转速"></td>
+                      <td class="fixed" title="全速固定 100%"><span>100</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p class="help" id="curve-err" hidden style="color:var(--crit);margin:6px 0 0"></p>
+                <div class="flip-actions">
+                  <button class="btn primary sm" id="curve-save">保存并生效</button>
+                  <button class="btn sm" id="fan-test" title="风扇全速转 10 秒，之后自动恢复原来的曲线">全速 10 秒</button>
+                  <button class="btn ghost sm" id="curve-reset">恢复默认</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- ===== 硬件监控：CPU / 内存 / 存储 / 网络 =====
+               静态信息（型号、核数、容量、序列号、SMART）来自 /api/hwinfo（后端缓存，前端 60 秒拉一次），
+               实时读数（占用、频率、速率、温度）来自 /api/sensor（10 秒轮询）。
+               容器里的内容全部由 app.js 的 renderCpu / renderMem / renderStorage / renderNet 生成，
+               这里只放骨架和「等待采样」占位，class 约定见各函数注释。 -->
+          <div class="card col-6 hw" id="hw-cpu-card">
+            <div class="card-hd">
+              <h2>处理器</h2>
+              <span class="sub" id="cpu-model">—</span>
+            </div>
+            <div class="hw-stats" id="cpu-stats"><span class="hw-wait">等待采样…</span></div>
+            <div class="core-grid" id="cpu-cores"></div>
+          </div>
+
+          <div class="card col-6 hw" id="hw-mem-card">
+            <div class="card-hd">
+              <h2>内存</h2>
+              <span class="sub" id="mem-sum">—</span>
+            </div>
+            <div class="hw-stats" id="mem-stats"><span class="hw-wait">等待采样…</span></div>
+            <div class="mem-stack" id="mem-stack" aria-hidden="true"></div>
+            <div class="mem-legend" id="mem-legend"></div>
+          </div>
+
+          <div class="card col-12 hw" id="hw-disk-card">
+            <div class="card-hd">
+              <h2>存储</h2>
+              <span class="sub" id="disk-sum">—</span>
+            </div>
+            <div class="tbl-wrap">
+              <table class="disk-tbl">
+                <colgroup>
+                  <col class="c-slot"><col class="c-name"><col class="c-cap"><col class="c-temp"><col class="c-health">
+                  <col class="c-pow"><col class="c-busy"><col class="c-rate"><col class="c-rate"><col class="c-act">
+                </colgroup>
+                <thead>
+                  <tr><th>盘位</th><th>硬盘</th><th>容量 · 已用 / 空闲</th><th class="n">温度</th><th>健康</th><th class="n">通电</th><th class="n">繁忙</th><th class="n">读取</th><th class="n">写入</th><th class="dact-h"><span class="sr-only">详情</span></th></tr>
+                </thead>
+                <tbody id="disk-tbody"><tr><td colspan="10" class="empty-row">等待采样…</td></tr></tbody>
+              </table>
+            </div>
+            <h3 class="sec" id="raid-title" hidden>存储阵列</h3>
+            <div class="raid-list" id="raid-list"></div>
+          </div>
+
+          <div class="card col-12 hw" id="hw-net-card">
+            <div class="card-hd">
+              <h2>网络</h2>
+              <span class="sub" id="net-sum">—</span>
+            </div>
+            <div class="nic-grid" id="nic-grid"><span class="hw-wait">等待采样…</span></div>
+          </div>
+
+          <div class="card mini col-4">
+            <div class="card-hd">
+              <h2>指示灯</h2>
+              <div class="spacer"></div>
+              <span class="chip neutral" id="ov-led-chip">全部自动</span>
+            </div>
+            <div class="led-row">
+              <span class="led-dot green" data-led-dot="pwr"></span>
+              <span class="led-name">电源灯</span>
+              <div class="spacer"></div>
+              <div class="seg" data-led="pwr">
+                <button data-mode="auto" aria-pressed="true">自动</button>
+                <button data-mode="off" aria-pressed="false">全灭</button>
+              </div>
+            </div>
+            <div class="led-row">
+              <span class="led-dot green" data-led-dot="dsk"></span>
+              <span class="led-name">硬盘灯</span>
+              <div class="spacer"></div>
+              <div class="seg" data-led="dsk">
+                <button data-mode="auto" aria-pressed="true">自动</button>
+                <button data-mode="breathe" aria-pressed="false" title="盘休眠时绿灯 2 秒亮 / 2 秒灭">呼吸</button>
+                <button data-mode="off" aria-pressed="false">全灭</button>
+              </div>
+            </div>
+            <p class="help">强制全灭在固件升级、自愈重装后依然保持</p>
+          </div>
+
+          <div class="card mini col-4">
+            <div class="card-hd">
+              <h2>蜂鸣器</h2>
+              <div class="spacer"></div>
+              <button class="btn sm ghost" id="ov-beep-test"><svg aria-hidden="true"><use href="#i-play"/></svg>试听</button>
+            </div>
+            <div class="big"><button class="num-edit" id="ov-beep-num" title="点击拖动调节">280</button><small>ms</small></div>
+            <div class="mini-foot" id="ov-beep-foot"><span>长按电源键</span><b id="ov-beep-long">鸣叫 280 ms</b></div>
+            <div class="mini-slide" id="ov-beep-slide" hidden>
+              <input type="range" id="ov-beep-ov" min="30" max="5000" step="10" value="280" style="--p:5%" aria-label="蜂鸣时长，30 到 5000 毫秒" title="左右拖动调节，松手生效">
+            </div>
+            <p class="help">开机提示音与长按关机共用此时长；点数字可拖动调节</p>
+          </div>
+
+          <div class="card mini col-4" id="ov-sch-card">
+            <div class="card-hd">
+              <h2>定时开关机</h2>
+              <div class="spacer"></div>
+              <label class="switch">
+                <input type="checkbox" id="ov-sch-on" checked aria-label="启用定时开关机">
+                <span class="track"></span>
+              </label>
+            </div>
+            <div class="mini-times">
+              <div class="mini-time">
+                <button class="t" id="ov-sch-off" data-edit-time="off" title="点击修改">03:00</button>
+                <div class="k">每日关机</div>
+              </div>
+              <div class="mini-time">
+                <button class="t" id="ov-sch-boot" data-edit-time="boot" title="点击修改">08:00</button>
+                <div class="k">每日开机</div>
+              </div>
+            </div>
+            <div class="mini-foot"><span>距下次关机</span><b id="ov-sch-gap">—</b></div>
+            <p class="help">开机靠硬件时钟唤醒，需保持通电；时间可直接点开修改</p>
+          </div>
+
+          <div class="card col-8 svc-card">
+            <div class="card-hd">
+              <h2>服务状态</h2>
+              <span class="chip ok" id="svc-summary"><i class="dot"></i>检测中…</span>
+              <div class="spacer"></div>
+              <button class="btn sm ghost" id="btn-svc-refresh">重新检测</button>
+            </div>
+            <div class="svc-grid" id="svc-grid"></div>
+            <div class="svc-hint" id="svc-hint" hidden>
+              <svg aria-hidden="true"><use href="#i-alert"/></svg>
+              <span>服务全部未运行。常见原因是系统更新后依赖缺失，或脚本没有重新部署。</span>
+              <button class="go" id="svc-hint-go">去运行自检</button>
+            </div>
+          </div>
+
+          <div class="card port-card col-4">
+            <div class="card-hd">
+              <h2>访问端口</h2>
+              <span class="sub">改完自动重启</span>
+            </div>
+            <div class="field">
+              <label for="port-input">网页控制台端口</label>
+              <input type="number" id="port-input" value="18899" min="1024" max="65535" inputmode="numeric" aria-describedby="port-hint">
+            </div>
+            <button class="btn primary" id="port-save" style="width:100%;margin-top:12px">保存并重启应用</button>
+            <p class="help" id="port-hint" style="margin:8px 0 0">范围 1024 – 65535，避免与系统服务冲突</p>
+            <p class="field-err" id="port-err" hidden></p>
+            <p class="port-confirm" id="port-confirm" hidden>
+              服务会重启并断开约 3 秒，之后请用 <b id="port-next">—</b> 重新打开。
+            </p>
+            <dl class="kv">
+              <div class="row"><dt>当前访问地址</dt><dd id="port-url" class="mono">http://fnOS-S2:18899</dd></div>
+              <div class="row"><dt>访问口令</dt><dd id="acc-token">—</dd></div>
+            </dl>
+            <p class="help acc-hint" id="acc-hint" hidden>没有口令时，局域网里的设备不能改端口、运行脚本或重启设备。口令在飞牛「应用设置 → 配置」里设置。</p>
+          </div>
+
+          <div class="card col-12">
+            <div class="card-hd"><h2>设备信息</h2></div>
+            <dl class="kv kv-grid">
+              <div class="row"><dt>设备型号</dt><dd id="set-board">—</dd></div>
+              <div class="row"><dt>操作系统</dt><dd id="set-os">—</dd></div>
+              <div class="row"><dt>内核</dt><dd id="set-kernel" class="mono">—</dd></div>
+              <div class="row"><dt>架构</dt><dd id="set-arch" class="mono">—</dd></div>
+              <div class="row"><dt>主机名</dt><dd id="set-host" class="mono">—</dd></div>
+              <div class="row"><dt>运行身份</dt><dd id="set-root">—</dd></div>
+              <div class="row"><dt>运行时长</dt><dd id="set-uptime">—</dd></div>
+              <div class="row"><dt>控制台版本</dt><dd id="set-ver" class="mono">—</dd></div>
+            </dl>
+            <p class="info-note">
+              <svg aria-hidden="true"><use href="#i-info"/></svg><span id="set-note">数值来自设备实时状态，每 10 秒刷新</span>
+            </p>
+          </div>
+
+        </div>
+      </section>
+      <section class="view" data-view="control">
+        <div class="grid">
+
+
+          <div class="card scripts-card col-6">
+            <div class="card-hd">
+              <h2>脚本库</h2>
+              <span class="sub">维护脚本和模块安装包都放这里，安装包上传后点「运行」即安装</span>
+              <div class="spacer"></div>
+              <span class="count" id="script-count" aria-live="polite" title="脚本库里可见的脚本总数">0 个</span>
+            </div>
+            <div class="dropzone" id="dropzone">
+              <svg aria-hidden="true"><use href="#i-upload"/></svg>
+              <!-- 文字包一层：.dropzone 是纵向 flex，裸文本和 <b> 会各自成为一个 flex 项，一句话被拆成五行 -->
+              <span>把<b>维护脚本</b>或<b>模块安装包</b>拖到这里，或点击选择文件</span>
+            </div>
+            <div class="script-list" id="script-list"></div>
+          </div>
+
+          <div class="card term-card col-6">
+            <div class="card-hd">
+              <h2>执行日志</h2>
+              <!-- 默认空：只有真的运行过脚本，才写「这份日志来自哪个脚本」 -->
+              <span class="sub mono" id="term-target"></span>
+              <div class="spacer"></div>
+              <button class="btn sm ghost" id="term-copy"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制</button>
+              <button class="btn sm ghost" id="term-clear">清空</button>
+            </div>
+            <div class="term">
+              <div class="term-bar">
+                <span class="prompt">$</span>
+                <span>执行输出</span>
+                <div class="spacer"></div>
+                <span class="chip" id="term-status">就绪</span>
+              </div>
+              <pre class="term-log" id="term-log"><span class="dim">// 选择左侧脚本后点击「运行」，输出会实时显示在这里</span><span class="cursor"></span></pre>
+            </div>
+          </div>
+
+          <div class="card col-12">
+            <div class="card-hd">
+              <h2>已安装模块</h2>
+              <span class="sub" id="mod-sub" title="/etc/s2hwctl/patches.d">已装进设备的功能模块</span>
+              <div class="spacer"></div>
+              <span class="count" id="mod-count">0 个</span>
+              <button class="btn sm" id="mod-refresh" title="重新扫描模块目录"><svg aria-hidden="true"><use href="#i-refresh"/></svg>重新扫描</button>
+            </div>
+            <div id="mod-warn" class="mod-warn" hidden></div>
+            <div id="mod-list" class="mod-list"></div>
+            <div class="mod-foot">
+              <p class="help">
+                模块以管理员权限运行。「启用 / 停用」按模块配置里写好的步骤逐步执行；
+                「卸载」先执行停用步骤还原系统改动，再删除模块带来的系统服务、设备规则和模块文件。
+              </p>
+              <dl class="kv mod-kv">
+                <div class="row"><dt>框架版本</dt><dd id="mod-fw" class="mono" title="模块目录 /etc/s2hwctl/patches.d">1.0.0</dd></div>
+              </dl>
+            </div>
+            <div class="mod-tip">
+              <svg aria-hidden="true"><use href="#i-info"/></svg>
+              <span>要求更高框架版本的模块会被跳过，原因列在上方</span>
+            </div>
+          </div>
+
+          <!-- 电源：放在控制页最下面，只有「重启」一颗普通尺寸按钮；点了先弹确认。
+               不提供关机：关了网页就够不着设备了。定时开关机在概览里。 -->
+          <div class="card col-12 power-card">
+            <div class="power-row">
+              <span class="pr-ic"><svg aria-hidden="true"><use href="#i-power"/></svg></span>
+              <div class="pr-tx">
+                <h2>电源</h2>
+                <span class="sub" id="power-sub">重启大约需要 1–2 分钟，期间页面会等设备恢复后自动刷新</span>
+              </div>
+              <div class="pr-btns">
+                <button class="btn" type="button" data-power="reboot"><svg aria-hidden="true"><use href="#i-refresh"/></svg>重启设备</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+  </main>
+
+  <!-- 手机端底部导航。和顶栏那组 .nav-item 是同一套按钮（同样的 data-view，app.js 的 go() 两处一起点亮），
+       单独放在 .topbar 外面：顶栏下滑隐藏用的是 transform，而 transform / backdrop-filter 会让里面的
+       position:fixed 改成相对顶栏定位 —— 底栏要是放在顶栏里，就会跟着顶栏一起被收上去。桌面端隐藏。 -->
+  <nav class="tabbar" aria-label="底部导航">
+    <button class="nav-item" data-view="overview" aria-current="page">
+      <svg aria-hidden="true"><use href="#i-gauge"/></svg><span>概览</span>
+    </button>
+    <button class="nav-item" data-view="control">
+      <svg aria-hidden="true"><use href="#i-sliders"/></svg><span>控制</span>
+    </button>
+  </nav>
+</div>
+
+<!-- 脚本只读预览 -->
+<dialog class="viewer" id="script-viewer" aria-labelledby="viewer-title">
+  <div class="viewer-hd">
+    <h3 id="viewer-title">查看脚本</h3>
+    <button class="btn sm ghost" id="viewer-close" type="button">关闭</button>
+  </div>
+  <p class="viewer-note" id="viewer-note"></p>
+  <pre class="viewer-body" id="viewer-body" tabindex="0"></pre>
+</dialog>
+
+<!-- 电源操作二次确认：点卡片上的按钮只打开这里，在这里再点一次「确认」才执行 -->
+<dialog class="confirm-dlg" id="power-dlg" aria-labelledby="pd-title" aria-describedby="pd-desc">
+  <div class="pd-body">
+    <span class="pd-ic accent" id="pd-ic"><svg aria-hidden="true"><use href="#i-refresh"/></svg></span>
+    <h3 id="pd-title">确认重启设备？</h3>
+    <p id="pd-desc"></p>
+    <p class="field-err" id="pd-err" hidden></p>
+  </div>
+  <div class="pd-foot">
+    <button class="btn" type="button" id="pd-cancel">取消</button>
+    <button class="btn accent-solid" type="button" id="pd-ok" disabled>确认</button>
+  </div>
+</dialog>
+
+<!-- 重启等待：盖住整页，直到服务重新连上自动刷新；5 分钟连不上就说重启失败 -->
+<div class="reboot-ov" id="reboot-ov" role="alertdialog" aria-modal="true" aria-labelledby="rb-title" aria-describedby="rb-desc" tabindex="-1" hidden>
+  <div class="rb-card">
+    <div class="rb-ring" id="rb-ring">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <circle class="rb-track" cx="32" cy="32" r="28"/>
+        <circle class="rb-arc" cx="32" cy="32" r="28"/>
+      </svg>
+      <span class="rb-ic" id="rb-ic"><svg aria-hidden="true"><use href="#i-refresh"/></svg></span>
+    </div>
+    <h3 id="rb-title">设备正在重启</h3>
+    <p id="rb-desc">请不要关闭这个页面，设备恢复后会自动刷新</p>
+    <ol class="rb-steps" id="rb-steps">
+      <li data-step="sent">已发出重启指令</li>
+      <li data-step="down">设备关闭服务</li>
+      <li data-step="up">设备启动，等待服务恢复</li>
+    </ol>
+    <div class="rb-bar"><i id="rb-bar"></i></div>
+    <p class="rb-time">已等待 <span id="rb-elapsed">0:00</span>，最长 <span id="rb-max">5:00</span></p>
+    <div class="rb-foot" id="rb-foot" hidden>
+      <button class="btn" type="button" id="rb-wait">继续等待</button>
+      <button class="btn accent-solid" type="button" id="rb-reload">刷新页面</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"><svg aria-hidden="true"><use href="#i-check"/></svg><span id="toast-msg">已保存</span></div>
+
+<script src="app.js"></script>
+</body>
+</html>

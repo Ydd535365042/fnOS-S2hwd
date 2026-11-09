@@ -1,0 +1,21 @@
+[
+    {
+        "stepTitle": "数据处理",
+        "items": [
+            {
+                "type": "radio",
+                "field": "wizard_data_action",
+                "label": "卸载后如何处理本应用的配置与上传脚本",
+                "options": [
+                    { "label": "保留（重新安装可继续使用）", "value": "keep" },
+                    { "label": "删除", "value": "delete" }
+                ],
+                "initValue": "keep"
+            },
+            {
+                "type": "tips",
+                "helpText": "系统自身的 /etc/sata-led.conf、/etc/fan-control.conf 不会被删除，仅移除本应用写入的开机应用服务。"
+            }
+        ]
+    }
+]

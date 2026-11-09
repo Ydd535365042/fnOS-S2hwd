@@ -1,0 +1,17 @@
+[Unit]
+Description=S2 定时开关机（开机应用调度）
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/s2-power-schedule.sh apply
+RemainAfterExit=yes
+# 任何方式关机（电源键长按、飞牛界面、控制台「关机」、定时关机）都会停这个服务，
+# 停的时候重设下一次开机闹钟。RTC 闹钟是一次性的：只靠定时关机那条路径重设的话，
+# 用别的方式关一次机，第二天就不会按时开机。arm-next 永远返回 0，不会拦住关机。
+ExecStop=/usr/local/sbin/s2-power-schedule.sh arm-next
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

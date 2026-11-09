@@ -1,0 +1,27 @@
+#!/bin/bash
+# 配置变更前：校验端口
+LOG_OUT="${TRIM_TEMP_LOGFILE:-/dev/null}"
+PORT="${wizard_port:-}"
+[ -z "$PORT" ] && exit 0
+case "$PORT" in
+    ''|*[!0-9]*) echo "端口必须是数字：${PORT}" > "$LOG_OUT"; exit 1 ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "端口范围需在 1-65535 之间：${PORT}" > "$LOG_OUT"
+    exit 1
+fi
+# 填了新口令但格式不对：拦下并说明。以前 config_callback 会静默丢弃它、沿用旧口令，
+# 用户以为改好了，下次用新口令登录才发现进不去。
+NEW_TOKEN="${wizard_token:-}"
+if [ -n "$NEW_TOKEN" ] && [ "${wizard_clear_token:-false}" != "true" ]; then
+    case "$NEW_TOKEN" in
+        *[!A-Za-z0-9._~+-]*)
+            echo "访问口令只能用字母、数字和 - _ . ~ + ，不要含空格或引号。" > "$LOG_OUT"
+            exit 1 ;;
+    esac
+    if [ "${#NEW_TOKEN}" -lt 6 ] || [ "${#NEW_TOKEN}" -gt 64 ]; then
+        echo "访问口令需要 6–64 位。" > "$LOG_OUT"
+        exit 1
+    fi
+fi
+exit 0

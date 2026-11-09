@@ -1,0 +1,119 @@
+#!/bin/bash
+# =============================================================
+# cmd/main —— S2 硬件控制台 启停 / 状态
+#
+# 端口优先级（飞牛官方推荐做法）：
+#   1) ${TRIM_PKGETC}/settings.conf 里的 PORT（安装向导 / 应用设置写入）
+#   2) $TRIM_SERVICE_PORT（系统注入，来自 manifest service_port，首次安装后固定）
+#   3) 内置默认 18899
+# TRIM_SERVICE_PORT 在改端口后不会重新注入，所以必须以 settings.conf 为准。
+#
+# 退出码：start/stop 成功 0、失败 1；status 运行中 0、未运行 3
+# =============================================================
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+ETC_DIR="${TRIM_PKGETC:-/var/apps/${APP_NAME}/etc}"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/${APP_NAME}/var}"
+# TRIM_APPDEST 在不同 fnOS 版本下指向不同目录：
+#   旧版  : /var/apps/<App>            → 真实文件在 <DEST>/target/server
+#   1.1.31+: /vol4/@appcenter/<App>     → 真实文件已在根，<DEST>/server
+# 必须双路径检测，禁止硬编码单一路径（否则新版会"无法启用"）。
+DEST="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+SERVER_DIR=""
+if [ -d "${DEST}/server" ]; then
+    SERVER_DIR="${DEST}/server"
+elif [ -d "${DEST}/target/server" ]; then
+    SERVER_DIR="${DEST}/target/server"
+elif [ -d "/var/apps/${APP_NAME}/target/server" ]; then
+    SERVER_DIR="/var/apps/${APP_NAME}/target/server"
+elif [ -d "/var/apps/${APP_NAME}/server" ]; then
+    SERVER_DIR="/var/apps/${APP_NAME}/server"
+fi
+SETTINGS="${ETC_DIR}/settings.conf"
+APP_CMD="/var/apps/${APP_NAME}/cmd/main"
+LOG_OUT="${TRIM_TEMP_LOGFILE:-/dev/null}"
+
+mkdir -p "$VAR_DIR" "$ETC_DIR" 2>/dev/null
+
+# shellcheck disable=SC1090
+[ -f "$SETTINGS" ] && . "$SETTINGS"
+PORT="${PORT:-${TRIM_SERVICE_PORT:-18899}}"
+TOKEN="${TOKEN:-}"
+
+PID_FILE="$VAR_DIR/app.pid"
+LOG_FILE="$VAR_DIR/server.log"
+
+PY=""
+for p in python3 /usr/bin/python3 python; do
+    if command -v "$p" >/dev/null 2>&1; then PY="$(command -v "$p")"; break; fi
+done
+
+log_msg() { echo "$(date '+%F %T') - $1" >> "$LOG_FILE" 2>/dev/null; }
+
+port_busy() {
+    [ -z "$PY" ] && return 1
+    "$PY" - "$PORT" <<'EOF' 2>/dev/null && return 0 || return 1
+import socket,sys
+s=socket.socket()
+s.settimeout(0.5)
+rc=s.connect_ex(('127.0.0.1',int(sys.argv[1])))
+s.close()
+sys.exit(0 if rc==0 else 1)
+EOF
+}
+
+alive() {
+    [ -f "$PID_FILE" ] || return 1
+    pid="$(head -n 1 "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    return 0
+}
+
+start_process() {
+    if alive; then log_msg "already running"; return 0; fi
+    if [ -z "$PY" ]; then
+        echo "未找到 python3，无法启动 S2 硬件控制台。" > "$LOG_OUT"
+        return 1
+    fi
+    mkdir -p "$VAR_DIR/scripts" "$VAR_DIR/jobs" "$VAR_DIR/logs" 2>/dev/null
+    if [ -z "$SERVER_DIR" ] || [ ! -f "${SERVER_DIR}/server.py" ]; then
+        echo "未找到 server.py（TRIM_APPDEST=${TRIM_APPDEST:-未设置}，已尝试 ${DEST}/server 与 ${DEST}/target/server）" > "$LOG_OUT"
+        log_msg "server.py not found"
+        return 1
+    fi
+    log_msg "starting on port ${PORT}"
+    PORT="$PORT" TOKEN="$TOKEN" \
+    S2_APP_CMD="$APP_CMD" S2_ETC_DIR="$ETC_DIR" S2_VAR_DIR="$VAR_DIR" \
+    S2_APP_DEST="$DEST" S2_PID_FILE="$PID_FILE" S2_APP_NAME="$APP_NAME" \
+    setsid nohup "$PY" "${SERVER_DIR}/server.py" >> "$LOG_FILE" 2>&1 &
+    disown 2>/dev/null
+    for _ in $(seq 1 20); do
+        sleep 0.5
+        alive && { log_msg "started"; return 0; }
+    done
+    echo "启动失败（端口 ${PORT} 可能被占用或 python 报错），详情见 ${LOG_FILE}" > "$LOG_OUT"
+    log_msg "start failed"
+    return 1
+}
+
+stop_process() {
+    log_msg "stopping"
+    if [ -f "$PID_FILE" ]; then
+        pid="$(head -n 1 "$PID_FILE" 2>/dev/null | tr -d '[:space:]')"
+        if [ -n "$pid" ]; then
+            kill -TERM "$pid" 2>/dev/null
+            local n=0
+            while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 10 ]; do sleep 1; n=$((n+1)); done
+            kill -KILL "$pid" 2>/dev/null
+        fi
+    fi
+    rm -f "$PID_FILE"
+    return 0
+}
+
+case "$1" in
+    start)  start_process; exit $? ;;
+    stop)   stop_process;  exit 0 ;;
+    status) if alive; then exit 0; else rm -f "$PID_FILE"; exit 3; fi ;;
+    *)      exit 1 ;;
+esac

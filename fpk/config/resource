@@ -1,0 +1,12 @@
+{
+    "data-share": {
+        "shares": [
+            {
+                "name": "fnOS-S2-scripts",
+                "permission": {
+                    "rw": ["fnOS-S2"]
+                }
+            }
+        ]
+    }
+}

@@ -1,0 +1,48 @@
+#!/bin/bash
+# 配置变更后：把端口与访问口令写进 settings.conf（应用中心随后会重启应用）
+#
+# 口令语义（配置页的 initValue 是静态的，回填不了当前值，所以绝不能用
+# 「默认关闭的开关」表示状态 —— 用户只想改端口，一保存就把口令清掉了）：
+#   wizard_clear_token=true  -> 清除口令
+#   wizard_token 非空         -> 设为新口令
+#   两者都没给               -> 保持 settings.conf 里的原值
+set -u
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+ETC_DIR="${TRIM_PKGETC:-/var/apps/${APP_NAME}/etc}"
+SETTINGS="${ETC_DIR}/settings.conf"
+mkdir -p "$ETC_DIR"
+PORT="${wizard_port:-}"
+[ -z "$PORT" ] && exit 0
+
+TOKEN=""
+if [ -f "$SETTINGS" ]; then
+    TOKEN="$(grep -E '^TOKEN=' "$SETTINGS" | tail -1 | cut -d= -f2-)"
+fi
+BOOT_SVC="$(grep -E '^INSTALL_BOOT_SERVICE=' "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)"
+[ -z "$BOOT_SVC" ] && BOOT_SVC=true
+
+# settings.conf 由 cmd/main 用 `.` 加载，值必须是 shell 能直接解析的字面量。
+# 向导的 pattern 只管 UI，绕过向导（SSH / 旧版应用中心）仍可能传进空格、
+# 引号或 $()；写进去轻则口令不对，重则 main 启动时执行注入内容。
+# 这里做最后一道兜底：含非法字符就不采纳这个新值，沿用原口令。
+NEW_TOKEN="${wizard_token:-}"
+CLEAR="${wizard_clear_token:-false}"
+case "$NEW_TOKEN" in
+    *[!A-Za-z0-9._~+-]*)
+        NEW_TOKEN=""
+        ;;
+esac
+if [ "$CLEAR" = "true" ]; then
+    TOKEN=""
+elif [ -n "$NEW_TOKEN" ]; then
+    TOKEN="$NEW_TOKEN"
+fi
+
+{
+    echo "# S2 硬件控制台 运行时配置（由 install_callback / config_callback 写入）"
+    echo "PORT=${PORT}"
+    echo "TOKEN=${TOKEN}"
+    echo "INSTALL_BOOT_SERVICE=${BOOT_SVC}"
+} > "$SETTINGS"
+chmod 600 "$SETTINGS"
+exit 0
