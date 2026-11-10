@@ -212,7 +212,7 @@
   }
 
   /* ---------- 导航 ---------- */
-  const navItems = [...document.querySelectorAll(".nav-item")];
+  const navItems = [...document.querySelectorAll(".nav-item[data-view]")];
   const views = [...document.querySelectorAll(".view")];
 
   // 页面标题就是导航里那颗点亮的按钮，不再另起一个 h1 ——

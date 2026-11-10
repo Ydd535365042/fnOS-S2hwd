@@ -99,6 +99,11 @@ button:focus:not(:focus-visible),.seg button:focus:not(:focus-visible),.nav-item
   .uptime{height:auto;padding:0;background:none;font-size:11px}
   .uptime .up-lbl{font-size:10.5px}
 }
+/* 窄窗口保留三个文字导航入口，给设备时间与原操作按钮留出空间。 */
+@media(min-width:621px) and (max-width:800px){
+  .topbar .nav-item{padding:0 8px}
+  .topbar .nav-item svg{display:none}
+}
 .icon-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:30px;border:1px solid var(--line-2);
   border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer;touch-action:manipulation;
   -webkit-tap-highlight-color:transparent}

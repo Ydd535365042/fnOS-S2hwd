@@ -74,7 +74,28 @@ try {
   await until(`!!document.getElementById('tk')`, "login form");
   await ev(`document.getElementById('tk').value='fixture-password'; document.querySelector('form').requestSubmit()`);
   await until(`location.pathname === '/' && !!document.getElementById('set-host')`, "login");
-  await cmd("Page.navigate", {url: base + "/manage.html"});
+  for (const width of [1440,1000,768,700,621,390,360]) {
+    await cmd("Emulation.setDeviceMetricsOverride", {width,height:900,deviceScaleFactor:1,mobile:width<620});
+    await until(`location.pathname === '/' && document.getElementById('set-host')?.textContent === 'fixture-host'`, "home entry");
+    await ev(`window.scrollTo(0,0)`);
+    const selector = width < 620 ? '.tabbar a[href="/manage.html"]' : '.topbar .views a[href="/manage.html"]';
+    const point = await ev(`(() => { const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2,width:r.width,height:r.height}; })()`);
+    check(point.width>0 && point.height>0 && point.x<width && point.y<900, `${width}px home shows the operations entry`);
+    check(await ev(`document.documentElement.scrollWidth <= innerWidth + 1`), `${width}px home keeps its existing layout without overflow`);
+    if ([1440,768,390].includes(width)) {
+      const entryShots=join(root,"..","_build"); mkdirSync(entryShots,{recursive:true});
+      const shot=await cmd("Page.captureScreenshot",{format:"png"});
+      writeFileSync(join(entryShots,`feature-entry-${width}.png`),Buffer.from(shot.data,"base64"));
+    }
+    await cmd("Input.dispatchMouseEvent", {type:"mousePressed",button:"left",clickCount:1,x:point.x,y:point.y});
+    await cmd("Input.dispatchMouseEvent", {type:"mouseReleased",button:"left",clickCount:1,x:point.x,y:point.y});
+    await until(`location.pathname === '/manage.html' && document.querySelectorAll('#navigation button').length === 11 && !document.getElementById('refresh').disabled && !!document.querySelector('#workspace table')`, "operations entry click");
+    check(true, `${width}px clicking operations opens the implemented features with remembered login`);
+    await ev(`document.querySelector('a[href="/"]').click()`);
+  }
+  await until(`location.pathname === '/' && !!document.querySelector('.tabbar a[href="/manage.html"]')`, "home after returning");
+  await cmd("Emulation.setDeviceMetricsOverride", {width:1440,height:900,deviceScaleFactor:1,mobile:false});
+  await ev(`document.querySelector('.topbar .views a[href="/manage.html"]').click()`);
   await until(`document.querySelectorAll('#navigation button').length === 11 && !document.getElementById('refresh').disabled && !!document.querySelector('#workspace table')`, "operations health");
   check(await ev(`document.getElementById('workspace').textContent.includes('当前无活动告警')`), "health report and diagnostics render from backend");
   const nav = async key => {
