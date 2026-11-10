@@ -105,7 +105,15 @@
     hours.onchange = () => refresh().catch(e => status(e.message, true)); metric.onchange = () => { plot.replaceChildren(); chart(plot, points, metric.value, metric.selectedOptions[0].textContent); };
     actions(panel, button("导出 CSV", () => download("s2-history.csv", csv(points), "text/csv")));
     await refresh();
-    if (allowed("admin")) { const retention = card("历史数据保留"); const days = field(retention, "保留天数（1–365）", (await api("overview")).retention_days, "number"); actions(retention, button("保存保留期限", async () => { await api("retention", {days: Number(days.value)}); status("保留期限已更新，过期数据将在下次采样清理"); }, "admin")); }
+    const overview = await api("overview");
+    panel.append(text("p", overview.history_enabled ? "历史记录已开启，会定期写入存储。" : "历史记录已暂停，已有数据保留。", "note"));
+    if (allowed("admin")) {
+      const retention = card("历史数据保留");
+      const enabled = field(retention, "记录历史数据", overview.history_enabled ? "on" : "off", "select", [["off", "关闭（减少后台写盘）"], ["on", "开启"]]);
+      const days = field(retention, "保留天数（1–365）", overview.retention_days, "number");
+      retention.append(text("p", "需要硬盘休眠时请关闭记录，或将运维数据放在 SSD/eMMC。关闭不会删除已有数据。", "note"));
+      actions(retention, button("保存保留期限", async () => { await api("retention", {days: Number(days.value), enabled: enabled.value === "on"}); await render(); status("历史记录设置已更新"); }, "admin"));
+    }
   }
   async function disks() {
     const panel = card("磁盘健康趋势"), selector = field(panel, "磁盘", "", "select", []), content = text("div", ""); panel.append(content);

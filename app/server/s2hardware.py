@@ -100,7 +100,9 @@ def dispatch(hw, operation, body):
             if operation == "diagnostics_files":
                 return True, [{"id": key, "title": title, "ok": os.path.isfile(path) and os.access(path, os.R_OK),
                     "detail": "配置可读" if os.path.isfile(path) and os.access(path, os.R_OK) else "未部署配置或读取权限不足，请部署硬件配置", "repair": ""}
-                    for key, title, path in (("fan-conf", "风扇配置文件", hw.ETC_FAN), ("schedule-conf", "定时计划配置文件", hw.APP_SCHED_CONF))]
+                    for key, title, path in (("fan-conf", "风扇配置文件", hw.ETC_FAN), ("schedule-conf", "定时计划配置文件", hw.APP_SCHED_CONF))] + [
+                    {"id": "disk-sleep-module", "title": "硬盘休眠保护", "ok": not os.path.exists("/sys/module/drivetemp"),
+                     "detail": "drivetemp 仍在运行，请重新部署硬件配置并在重启后复查" if os.path.exists("/sys/module/drivetemp") else "未加载 drivetemp", "repair": ""}]
             if operation == "config_snapshot":
                 return True, snapshot(hw)
             if operation == "config_validate":

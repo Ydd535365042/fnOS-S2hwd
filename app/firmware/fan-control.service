@@ -1,7 +1,7 @@
 
 [Unit]
 Description=Fan Control (CPU + HDD temperature, auto/manual)
-After=multi-user.target
+After=local-fs.target
 
 [Service]
 Type=simple

@@ -82,6 +82,7 @@ class OperationsTests(unittest.TestCase):
         self.ops = s2ops.Operations(self.temp.name, self.device.call, lambda: self.device.sensor,
                                    lambda: self.device.alerts, clock=lambda: self.device.now, network=self.device.network)
         self.admin = {"name": "fixture-admin", "role": "admin", "scopes": s2store.ROLES["admin"]}
+        self.ops.post("retention", {"days": 30, "enabled": True}, self.admin)
 
     def tearDown(self):
         self.temp.cleanup()

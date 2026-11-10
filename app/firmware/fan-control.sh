@@ -15,9 +15,9 @@
 #        - 起转 30% 固定，T4 全速 100% 固定
 #
 # 取温方式（按优先级）
-#   1) drivetemp 内核模块 → /sys/class/hwmon  —— 纯内核态，不唤醒休眠硬盘，首选
-#   2) smartctl -A -n standby                 —— 兜底；-n standby 保证不唤醒待机盘
-#   3) 取不到硬盘温度 → 退回纯 CPU 温控（日志会提示）
+#   1) s2_disk.py 显式识别直连 ATA / NVMe，电源状态未知时跳过
+#   2) 已休眠盘不取温；无法安全取温的盘使用保守风量
+#   3) 不加载 drivetemp，也不读取其 hwmon 节点
 # =============================================================
 
 # ---------- 默认配置（可被 /etc/fan-control.conf 覆盖） ----------
@@ -52,7 +52,7 @@ CPU_D2=30
 CPU_D3=70
 CPU_D4=100
 
-# 硬盘取温：hwmon 可用时不轮询 smartctl；不可用时每 N 个周期问一次
+# 硬盘取温：每 N 个周期调用一次受保护的 SMART 采集
 HDD_SMART_CYCLES=10  # 10 × 3s = 30s
 HDD_SMART_TIMEOUT=8
 
@@ -236,60 +236,9 @@ get_cpu_temp() {
     echo $(( temp_raw / 1000 ))
 }
 
-# 列出所有物理磁盘（含 NVMe）
-list_disks() {
-    local d out=""
-    for d in /dev/sd[a-z] /dev/nvme[0-9]n[0-9]; do
-        [ -b "$d" ] && out="$out $d"
-    done
-    echo $out
-}
-
-# 方式1：drivetemp 内核模块（不唤醒硬盘）。
-# 输出格式：每行 "名字=温度"
-read_disk_temp_hwmon() {
-    local d n v name t blk
-    for d in /sys/class/hwmon/hwmon*; do
-        [ -r "$d/name" ] || continue
-        read -r n 2>/dev/null < "$d/name" || n=""
-        case "$n" in
-            drivetemp) ;;
-            *) continue ;;
-        esac
-        read -r v 2>/dev/null < "$d/temp1_input" || continue
-        [ -n "$v" ] || continue
-        name=""
-        for blk in "${d}/device/block"/*; do
-            [ -e "$blk" ] && { name="${blk##*/}"; break; }
-        done
-        [ -n "$name" ] || name="${d##*/}"
-        t=$(( v / 1000 ))
-        echo "${name}=${t}"
-    done
-}
-
-# 方式2：smartctl（兜底）。-n standby 保证不会唤醒待机盘。
+# 统一读温：已知类型、休眠/未知状态退出；缺少组件时不退回危险读取。
 read_disk_temp_smart() {
-    local dev t name out=""
-    for dev in $(list_disks); do
-        name="${dev##*/}"
-        case "$name" in
-            nvme*)
-                t=$(timeout "$HDD_SMART_TIMEOUT" smartctl -A -n standby "$dev" 2>/dev/null \
-                    | awk '/^[Tt]emperature[:/]/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9]+$/) {print $i; exit}}')
-                ;;
-            *)
-                t=$(timeout "$HDD_SMART_TIMEOUT" smartctl -A -n standby "$dev" 2>/dev/null \
-                    | awk '/^ *(190|194) / {print $10; exit}')
-                ;;
-        esac
-        case "${t:-}" in
-            ''|*[!0-9]*) continue ;;
-        esac
-        [ "$t" -gt 120 ] && continue
-        out="$out ${name}=${t}"
-    done
-    echo $out
+    python3 /usr/local/sbin/s2_disk.py temperatures "$HDD_SMART_TIMEOUT" 2>/dev/null || echo "sensor=unknown"
 }
 
 # ---------- 4 锚点线性插值 ----------
@@ -337,7 +286,7 @@ write_status() {
 GUARD_CONF="${S2_GUARD_CONF:-/etc/s2hwctl/fan-guard.conf}"
 guard_active=0; guard_bad=0; guard_good=0; guard_reason=""
 check_guard() {
-    local cpu=$1 disk=$2 enabled=0 cpu_limit=80 disk_limit=55 fail_samples=3 k v reason=""
+    local cpu=$1 disk=$2 disk_unknown=${3:-0} enabled=0 cpu_limit=80 disk_limit=55 fail_samples=3 k v reason=""
     if [ -r "$GUARD_CONF" ]; then
         while IFS='=' read -r k v; do
             case "$v" in ''|*[!0-9]*) continue ;; esac
@@ -354,7 +303,8 @@ check_guard() {
     fi
     if [ "$cpu" -le 0 ] || [ "$cpu" -gt 125 ]; then reason="CPU 温度传感器无效"
     elif [ "$cpu" -ge "$cpu_limit" ]; then reason="CPU 持续超温"
-    elif [ "$disk" -ge "$disk_limit" ]; then reason="硬盘持续超温"; fi
+    elif [ "$disk" -ge "$disk_limit" ]; then reason="硬盘持续超温"
+    elif [ "$disk_unknown" -eq 1 ]; then reason="硬盘温度不可安全读取"; fi
     if [ -n "$reason" ]; then
         guard_bad=$((guard_bad + 1)); guard_good=0
         if [ "$guard_bad" -ge "$fail_samples" ]; then
@@ -377,7 +327,6 @@ main() {
     log "曲线 硬盘: T1=${HDD_T1}°/${HDD_D1}% T2=${HDD_T2}°/${HDD_D2}% T3=${HDD_T3}°/${HDD_D3}% T4=${HDD_T4}°/${HDD_D4}%"
     log "曲线 CPU : T1=${CPU_T1}°/${CPU_D1}% T2=${CPU_T2}°/${CPU_D2}% T3=${CPU_T3}°/${CPU_D3}% T4=${CPU_T4}°/${CPU_D4}%"
 
-    modprobe drivetemp 2>/dev/null && log "drivetemp 模块已加载（硬盘温度走内核 hwmon，不唤醒硬盘）"
 
     local use_pwm=1
     if [ $USE_GPIO_FORCE -eq 1 ]; then
@@ -417,25 +366,14 @@ main() {
 
         cpu=$(get_cpu_temp)
 
-        # ---- 硬盘温度：hwmon 优先，否则按周期轮询 smartctl ----
-        local disk_snap=""
-        if [ -d /sys/class/hwmon ]; then
-            disk_snap=$(read_disk_temp_hwmon)
+        # ---- 硬盘温度：定期刷新，休眠/未知时清除旧温度 ----
+        local disk_snap="" hdd_unknown=0
+        if [ $((cycle_count % HDD_SMART_CYCLES)) -eq 0 ]; then
+            cache_disks=$(read_disk_temp_smart)
         fi
-        if [ -n "$disk_snap" ]; then
-            hdd_source="hwmon"
-            cache_disks="$disk_snap"
-        else
-            if [ $((cycle_count % HDD_SMART_CYCLES)) -eq 0 ] || [ -z "$cache_disks" ]; then
-                local s
-                s=$(read_disk_temp_smart)
-                if [ -n "$s" ]; then
-                    hdd_source="smartctl"
-                    cache_disks="$s"
-                fi
-            fi
-            disk_snap="$cache_disks"
-        fi
+        disk_snap="$cache_disks"
+        hdd_source="smartctl"
+        case " $disk_snap " in *"=unknown "*) hdd_unknown=1; hdd_source="unknown" ;; esac
 
         # 取所有盘的最高温度
         for d in $disk_snap; do
@@ -458,6 +396,7 @@ main() {
             "$CPU_T1" "$CPU_T2" "$CPU_T3" "$CPU_T4" \
             "$CPU_D1" "$CPU_D2" "$CPU_D3" "$CPU_D4")
         target_duty=$(( hdd_duty > cpu_duty ? hdd_duty : cpu_duty ))
+        [ "$hdd_unknown" -eq 1 ] && [ "$target_duty" -lt 30 ] && target_duty=30
         [ "$target_duty" -gt 100 ] && target_duty=100
 
         # ---- 页面全速测试 ----
@@ -477,7 +416,7 @@ main() {
         fi
 
         local was_guard=$guard_active
-        check_guard "$cpu" "$hdd_max"
+        check_guard "$cpu" "$hdd_max" "$hdd_unknown"
         if [ "$guard_active" -eq 1 ]; then
             target_duty=100; mode=protect
         elif [ "$was_guard" -eq 1 ]; then

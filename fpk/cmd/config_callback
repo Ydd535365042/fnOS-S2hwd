@@ -20,6 +20,7 @@ if [ -f "$SETTINGS" ]; then
 fi
 BOOT_SVC="$(grep -E '^INSTALL_BOOT_SERVICE=' "$SETTINGS" 2>/dev/null | tail -1 | cut -d= -f2-)"
 [ -z "$BOOT_SVC" ] && BOOT_SVC=true
+OPS_DIR_LINE="$(grep -E '^S2_OPERATIONS_DIR=' "$SETTINGS" 2>/dev/null | tail -1)"
 
 # settings.conf 由 cmd/main 用 `.` 加载，值必须是 shell 能直接解析的字面量。
 # 向导的 pattern 只管 UI，绕过向导（SSH / 旧版应用中心）仍可能传进空格、
@@ -43,6 +44,7 @@ fi
     echo "PORT=${PORT}"
     echo "TOKEN=${TOKEN}"
     echo "INSTALL_BOOT_SERVICE=${BOOT_SVC}"
+    [ -z "$OPS_DIR_LINE" ] || printf '%s\n' "$OPS_DIR_LINE"
 } > "$SETTINGS"
 chmod 600 "$SETTINGS"
 exit 0

@@ -150,6 +150,7 @@ for need in ("server/server.py", "server/hwctl.py", "server/hwinfo.py", "server/
              "server/s2security.py", "server/public/login.js", "agent/install-hw-agent.sh",
              "server/s2store.py", "server/s2ops.py", "server/s2hardware.py", "server/job_runner.py",
              "server/public/manage.html", "server/public/manage.js", "server/public/manage.css", "firmware/s2_schedule.py",
+             "firmware/s2_disk.py",
              "server/public/index.html", "server/public/style.css", "agent/s2hw-agent.py", "firmware/deploy.sh",
              "firmware/fan-control.sh", "server/default_scripts/00-部署全部硬件配置.sh", "server/default_scripts/_common.sh"):
     if need not in an:

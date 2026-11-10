@@ -26,6 +26,7 @@ hwinfo —— S2 硬件控制台的「慢变硬件信息」采集层
 """
 
 import glob
+import importlib.util
 import json
 import os
 import platform
@@ -35,6 +36,10 @@ import shutil
 import subprocess
 import threading
 import time
+
+_disk_spec = importlib.util.spec_from_file_location("s2_disk", os.path.join(os.path.dirname(__file__), "..", "firmware", "s2_disk.py"))
+disk_reader = importlib.util.module_from_spec(_disk_spec)
+_disk_spec.loader.exec_module(disk_reader)
 
 # ================================================================
 # 基础工具（不依赖 hwctl，保持本模块可独立单测/单独 import）
@@ -881,40 +886,6 @@ def parse_diskstats(txt):
     return out
 
 
-def _hwmon_drivetemp_map():
-    """扫描 /sys/class/hwmon/hwmon*，找 name=drivetemp 的节点 → {块设备名: 温度℃ int}。
-    与 hwctl._hwmon_drivetemp_map 逻辑一致（避免循环 import，这里独立实现一份）。"""
-    out = {}
-    base = "/sys/class/hwmon"
-    if not os.path.isdir(base):
-        return out
-    try:
-        nodes = os.listdir(base)
-    except OSError:
-        return out
-    for node in nodes:
-        hw = os.path.join(base, node)
-        if rd(os.path.join(hw, "name"), "") != "drivetemp":
-            continue
-        raw = rd(os.path.join(hw, "temp1_input"), "")
-        if not raw:
-            continue
-        try:
-            temp_c = int(int(raw) / 1000)
-        except ValueError:
-            continue
-        dev_name = ""
-        block_dir = os.path.join(hw, "device", "block")
-        try:
-            children = os.listdir(block_dir)
-        except OSError:
-            children = []
-        if children:
-            dev_name = children[0]
-        out[dev_name or node] = temp_c
-    return out
-
-
 def enumerate_disks():
     """/sys/block/* 里的整盘清单（排除分区/loop/dm/md 等），每项带 sysfs 可读的身份信息。"""
     out = []
@@ -1213,19 +1184,10 @@ def smart_read_native(dev_path, name, rotational):
 
 
 def smartctl_json(dev_path):
-    """smartctl -j -a -n standby <dev> → (dict_or_None, standby_bool)。
-    -n standby 本身就是 smartmontools 的「盘休眠则不发送唤醒性命令」开关。"""
-    exe = which("smartctl")
-    if not exe:
-        return None, False
-    rc, out = run([exe, "-j", "-a", "-n", "standby", dev_path], timeout=20)
-    try:
-        d = json.loads(out)
-    except ValueError:
-        return None, False
-    msgs = json.dumps(d.get("smartctl", {}).get("messages", "")).upper()
-    if rc is not None and rc & 0x02 and "STANDBY" in msgs:
-        return None, True
+    """Explicit device type and fail-closed power handling shared with fan collection."""
+    d, state = disk_reader.read_smart(dev_path, full=True, runner=run, find=which)
+    if d is None:
+        return None, state == "standby"
     smart_status = d.get("smart_status") or {}
     passed = smart_status.get("passed")
     health = "ok" if passed is not False else "fail"
@@ -1315,7 +1277,6 @@ def read_disks(include_smart, is_root):
     """
     disks = enumerate_disks()
     stats = parse_diskstats(rd("/proc/diskstats", "") or "")
-    hwmon_temps = _hwmon_drivetemp_map()
     mounts = parse_mounts(rd("/proc/mounts", "") or "")
     mount_by_disk = {}
     for dev, mnt, _fstype in mounts:

@@ -44,6 +44,7 @@ if "--ops" in sys.argv:
     device.sensor["services"]["fan-control"] = "active"
     box.web._OPS = s2ops.Operations(str(box.root / "operations"), device.call, lambda: device.sensor,
                                    lambda: device.alerts, clock=lambda: device.now, network=device.network)
+    box.web._OPS.post("retention", {"days": 30, "enabled": True}, {"name": "fixture-admin"})
     for i in range(12):
         device.now += 31
         device.sensor["cpu_temp"] = 48 + i

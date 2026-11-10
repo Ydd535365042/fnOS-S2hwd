@@ -95,6 +95,8 @@ class Operations:
         self.fleet_lock = threading.Lock()
         self.fleet_cache = None
         self.fleet_at = 0
+        self.history_enabled = self.store.get("history_enabled", False) is True
+        self.notifications_enabled = bool(self.store.get("notifications", {}).get("enabled"))
 
     def call(self, operation, params=None):
         result = self.hardware(operation, params or {})
@@ -163,6 +165,14 @@ class Operations:
         return self.maintenance()
 
     def sample(self):
+        with self.lock:
+            if self.history_enabled:
+                self.sample_history()
+        if self.notifications_enabled:
+            self.enqueue_alerts()
+            self.deliver_pending()
+
+    def sample_history(self):
         now = self.clock()
         sensor = self.sensor()
         metrics = {k: number(sensor.get(k)) for k in ("cpu_temp", "hdd_max_temp", "fan_duty", "cpu_pct")}
@@ -185,8 +195,6 @@ class Operations:
                     db.execute("INSERT INTO disks(ts,identity,data) VALUES (?,?,?)", (now, identity, json.dumps(data)))
             self.last_smart = now
         self.last_sample = now
-        self.enqueue_alerts()
-        self.deliver_pending()
 
     def history(self, query):
         hours = integer(query.get("hours", "24"), 1, 24 * 365)
@@ -241,6 +249,7 @@ class Operations:
         if not old.get("enabled") and config["enabled"]:
             self.store.set("notify_cursor", self.alert_snapshot().get("last_id", 0))
         self.store.set("notifications", config)
+        self.notifications_enabled = config["enabled"]
         return self.notifications()
 
     def enqueue_alerts(self):
@@ -249,11 +258,12 @@ class Operations:
             return
         snapshot = self.alert_snapshot()
         cursor = self.store.get("notify_cursor", 0)
+        events = [event for event in snapshot.get("events", []) if event["id"] > cursor]
+        if not events:
+            return
         maintained = self.maintenance()["active"]
         with self.store.db() as db:
-            for event in snapshot.get("events", []):
-                if event["id"] <= cursor:
-                    continue
+            for event in events:
                 # Maintenance silences expected service events, never thermal/disk failures.
                 suppressed = maintained and str(event.get("key", "")).startswith("svc:")
                 db.execute("INSERT OR IGNORE INTO deliveries(event_id,ts,payload,status,next,error) VALUES (?,?,?,?,?,?)",
@@ -377,7 +387,8 @@ class Operations:
             return principal
         if route == "overview":
             return {"maintenance": self.maintenance(), "last_sample": self.last_sample,
-                    "last_error": self.last_error, "retention_days": self.store.get("retention_days", 30)}
+                    "last_error": self.last_error, "retention_days": self.store.get("retention_days", 30),
+                    "history_enabled": self.history_enabled}
         if route == "history":
             return self.history(query)
         if route == "disks":
@@ -417,7 +428,14 @@ class Operations:
         if route == "restore":
             return self.restore(body, actor)
         if route == "retention":
-            self.store.set("retention_days", integer(body.get("days"), 1, 365))
+            days = integer(body.get("days"), 1, 365)
+            enabled = body.get("enabled", self.history_enabled)
+            if not isinstance(enabled, bool):
+                raise Problem("历史记录开关无效")
+            with self.lock:
+                self.store.set("retention_days", days)
+                self.store.set("history_enabled", enabled)
+                self.history_enabled = enabled
         elif route == "maintenance":
             return self.set_maintenance(body)
         elif route == "schedule":

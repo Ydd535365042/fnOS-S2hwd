@@ -90,6 +90,11 @@ try {
   await click("导出 CSV");
   for(let i=0;i<30&&!existsSync(join(downloads,"s2-history.csv"));i++) await sleep(100);
   check(readFileSync(join(downloads,"s2-history.csv"),"utf8").includes("cpu_temp"), "history CSV downloads with recorded values");
+  await set("记录历史数据", "off"); await click("保存保留期限"); await saved("历史记录设置已更新");
+  check(await ev(`document.getElementById('workspace').textContent.includes('历史记录已暂停')`), "history recording can be paused");
+  check(await ev(`document.querySelectorAll('svg.chart polyline').length === 1`), "pausing history preserves existing records");
+  await set("记录历史数据", "on"); await click("保存保留期限"); await saved("历史记录设置已更新");
+  check(await ev(`document.getElementById('workspace').textContent.includes('历史记录已开启')`), "history recording can be resumed");
   await nav("disks"); check(await ev(`document.getElementById('workspace').textContent.includes('reallocated')`), "disk history displays SMART samples");
   await nav("backups"); await click("创建并下载备份"); await saved("备份已保存");
   for(let i=0;i<30&&!existsSync(join(downloads,"s2-config-1.json"));i++) await sleep(100);

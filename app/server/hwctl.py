@@ -751,48 +751,10 @@ def _disk_rate(name, rd_sectors, wr_sectors, io_ticks, now):
     return rd_bps, wr_bps, round(busy_pct, 1)
 
 
-def _hwmon_drivetemp_map():
-    """扫描 /sys/class/hwmon/hwmon*，找 name=drivetemp 的节点，
-    返回 {块设备名: 温度(°C, int)}。对应不上设备名的条目忽略。"""
-    out = {}
-    base = "/sys/class/hwmon"
-    if not os.path.isdir(base):
-        return out
-    try:
-        nodes = os.listdir(base)
-    except OSError:
-        return out
-    for node in nodes:
-        hw = os.path.join(base, node)
-        if sysfs_read(os.path.join(hw, "name"), "") != "drivetemp":
-            continue
-        raw = sysfs_read(os.path.join(hw, "temp1_input"), "")
-        if not raw:
-            continue
-        try:
-            temp_c = int(int(raw) / 1000)
-        except ValueError:
-            continue
-        # 通过 <hwmon>/device/block/<sdX> 这个子目录拿到对应的块设备名；
-        # 取不到就退回 hwmon 节点名本身（基本不会用到，只是不让这条信息彻底丢掉）。
-        dev_name = ""
-        block_dir = os.path.join(hw, "device", "block")
-        try:
-            children = os.listdir(block_dir)
-        except OSError:
-            children = []
-        if children:
-            dev_name = children[0]
-        if not dev_name:
-            dev_name = node
-        out[dev_name] = temp_c
-    return out
-
-
 def list_disks():
     """块设备清单（容量 / 型号 / 温度 / 读写速率 / 忙碌占比）。
     只列整盘(sd*, nvme*n*, mmcblk*)，不列分区。
-    温度优先取 drivetemp(hwmon)，没有再退回 fan-control 写的 status；读不到为空。
+    温度只读取风扇服务的缓存；不访问 drivetemp 或主动读盘。
     速率/忙碌占比来自 /proc/diskstats 两次采样之差，首次调用无基线返回 0。"""
     out = []
     base = "/sys/block"
@@ -800,10 +762,19 @@ def list_disks():
         return out
     hdd_temps = {}
     fs = read_kv(FAN_STATUS) if os.path.exists(FAN_STATUS) else {}
+    try:
+        if time.time() - os.path.getmtime(FAN_STATUS) > 90:
+            fs = {}
+    except OSError:
+        fs = {}
     for k, v in fs.items():
         if k.startswith("temp_") and v:
             hdd_temps[k[5:]] = v
-    hwmon_temps = _hwmon_drivetemp_map()
+    # Current fan firmware reports a single snapshot; non-numeric states are not temperatures.
+    for item in fs.get("disks", "").split():
+        name, _, value = item.partition("=")
+        if value.isdigit():
+            hdd_temps[name] = value
     stats = read_diskstats()
     now = time.time()
     try:
@@ -821,9 +792,7 @@ def list_disks():
         model = sysfs_read(os.path.join(d, "device", "model"), "") or \
             sysfs_read(os.path.join(d, "device", "name"), "")
         rot = sysfs_read(os.path.join(d, "queue", "rotational"), "1")
-        temp = hwmon_temps.get(name)
-        if temp is None:
-            temp = hdd_temps.get(name, "")
+        temp = hdd_temps.get(name, "")
         rd_bps = wr_bps = 0
         busy_pct = 0.0
         if name in stats:
@@ -981,6 +950,8 @@ def _sys_fields():
             d["standby"] = hwinfo.disk_is_standby("/dev/" + d["name"], d["name"], d["rotational"])
         except Exception:
             d["standby"] = None
+        if d["standby"] is not False:
+            d["temp"] = None
     # read_cpu_pct() 内部靠一份模块级基线算「两次采样之间」的差值——同一次轮询里
     # 调两遍，第二遍会把第一遍刚更新的基线当成「上一次」，算出几乎为 0 的占用率。
     # 所以只调一次，cpu.pct 与旧字段 cpu_pct 共享同一个值（HW_SPEC: "与 cpu_pct 同值"）。

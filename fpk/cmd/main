@@ -85,6 +85,7 @@ start_process() {
     PORT="$PORT" TOKEN="$TOKEN" \
     S2_APP_CMD="$APP_CMD" S2_ETC_DIR="$ETC_DIR" S2_VAR_DIR="$VAR_DIR" \
     S2_APP_DEST="$DEST" S2_PID_FILE="$PID_FILE" S2_APP_NAME="$APP_NAME" \
+    S2_OPERATIONS_DIR="${S2_OPERATIONS_DIR:-}" \
     setsid nohup "$PY" "${SERVER_DIR}/server.py" >> "$LOG_FILE" 2>&1 &
     disown 2>/dev/null
     for _ in $(seq 1 20); do

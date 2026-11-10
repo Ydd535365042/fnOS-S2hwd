@@ -121,8 +121,10 @@ inst "$SRC/fanctl"                 /usr/local/bin/fanctl 755
 inst "$SRC/fan-api.py"             /usr/local/sbin/fan-api.py 755
 inst "$SRC/fan-api.service"        /etc/systemd/system/fan-api.service 644
 inst_conf "$SRC/fan-api.conf"           /etc/fan-api.conf 644
-# 硬盘温度走内核 hwmon
-inst "$SRC/drivetemp.conf"         /etc/modules-load.d/drivetemp.conf 644
+# 安装、升级、自愈共用迁移，保留已有配置备份和其他模块加载项。
+inst "$SRC/s2_disk.py" /usr/local/sbin/s2_disk.py 755
+python3 /usr/local/sbin/s2_disk.py disable-drivetemp >> "$LOG" 2>&1 || \
+  log "硬盘休眠迁移未完全生效，请查看日志并在重启后复查 drivetemp"
 
 # ---- 开机版本守卫 ----
 inst "$SRC/boot-version-guard.sh"  /usr/local/bin/boot-version-guard.sh 755

@@ -99,7 +99,7 @@ REQUIRED_FILES=(
   "set-hostname.sh" "set-hostname.service"
   "sata-led-enable.sh" "sata-led-enable.service" "sata-led-manager.sh" "sata-led-manager.service" "sata-led.conf"
   "fan-control.sh" "fan-control.service" "fan-control.conf" "fanctl"
-  "fan-api.py" "fan-api.service" "fan-api.conf" "drivetemp.conf"
+  "fan-api.py" "fan-api.service" "fan-api.conf" "drivetemp.conf" "s2_disk.py" "s2_schedule.py"
   "s2-power-schedule.sh" "s2-power-schedule.service" "s2-power-shutdown.service" "s2-power-shutdown.timer" "s2-power-schedule.conf"
 )
 
@@ -215,10 +215,12 @@ inst "${DIR}/fan-api.service" /etc/systemd/system/fan-api.service 644
 inst_conf "${DIR}/fan-api.conf" /etc/fan-api.conf 644
 echo "ℹ️  fan-api 已安装但【未启用】，页面接入时执行: systemctl enable --now fan-api"
 
-# 开机加载 drivetemp：硬盘温度走内核 hwmon，避免 smartctl 反复唤醒待机盘
-inst "${DIR}/drivetemp.conf" /etc/modules-load.d/drivetemp.conf 644
+# 与应用部署使用同一迁移，防止自愈重新启用 drivetemp。
+inst "${DIR}/s2_disk.py" /usr/local/sbin/s2_disk.py 755
+python3 /usr/local/sbin/s2_disk.py disable-drivetemp || echo "硬盘休眠迁移未完全生效，请重启后复查 drivetemp"
 
 # 定时开关机：每日定时关机(systemd timer + poweroff) + 定时开机(RTC wakealarm)
+inst "${DIR}/s2_schedule.py" /usr/local/sbin/s2_schedule.py 755
 inst "${DIR}/s2-power-schedule.sh" /usr/local/sbin/s2-power-schedule.sh 755
 inst "${DIR}/s2-power-schedule.service" /etc/systemd/system/s2-power-schedule.service 644
 inst "${DIR}/s2-power-shutdown.service" /etc/systemd/system/s2-power-shutdown.service 644

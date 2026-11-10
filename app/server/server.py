@@ -94,7 +94,7 @@ def get_ops():
     global _OPS
     with _OPS_LOCK:
         if _OPS is None:
-            _OPS = s2ops.Operations(os.path.join(VAR_DIR, "operations"), hw_call,
+            _OPS = s2ops.Operations(os.environ.get("S2_OPERATIONS_DIR") or os.path.join(VAR_DIR, "operations"), hw_call,
                                     hwctl.collect_sensor, lambda: ALERTS.snapshot(200))
         return _OPS
 
