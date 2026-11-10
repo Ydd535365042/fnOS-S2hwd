@@ -83,7 +83,7 @@
     parent.append(svg);
   }
   async function health() {
-    const [overview, report] = await Promise.all([api("overview"), api("report")]);
+    const [overview, report, integration] = await Promise.all([api("overview"), api("report"), api("integration").catch(error => ({backend:"unknown", native:{detail:error.message}, dtb:{readable:false,detail:error.message}}))]);
     const cards = text("div", "", "cards"); workspace.append(cards);
     const summary = card("设备健康", cards);
     summary.append(text("div", report.alerts.active.length ? report.alerts.active.length + " 项待关注" : "当前无活动告警", "metric"));
@@ -93,6 +93,23 @@
     actions(summary, button("下载健康报告", () => download("s2-health-report.json", report)));
     const problems = card("活动告警", cards);
     table(problems, [["问题", r => r.title], ["级别", r => r.level], ["开始时间", r => date(r.since)]], report.alerts.active);
+    const tools = card("设备树与原生硬件", cards); tools.classList.add("wide");
+    const dtb = integration.dtb || {}, native = integration.native || {}, units = integration.services || {};
+    const dtbState = dtb.reboot_required ? "待重启（" + (dtb.selected_new ? "升级" : "回滚") + "）" : dtb.running_new ? (dtb.prepared ? "已加载新版" : "下次引导需检查") : "尚未升级";
+    const lightState = integration.lights_enabled ? (units["fnos-s2-led-boot"] === "failed" ? "启动失败" : "已启用") : "未启用（选装）";
+    const nativeState = integration.backend === "native" ? (units["fnos-s2-native"] === "active" ? "运行中（标准接口）" : units["fnos-s2-native"] === "activating" ? "正在启动" : "服务未运行") : ({legacy:"旧控制兼容模式", unavailable:"尚未就绪"}[integration.backend] || "待检查");
+    table(tools, [["功能", r => r.name], ["状态", r => r.state], ["说明", r => r.detail]], [
+      {name: "S2 设备树", state: dtb.readable === false ? "待检查" : dtbState, detail: dtb.detail || dtb.model || "尚未读取板型"},
+      {name: "原生硬件控制", state: nativeState, detail: native.detail || ""},
+      {name: "电源灯美化", state: lightState, detail: "开机闪灯、关机混色与提示音；不修改引导配置"}
+    ]);
+    const review = name => { location.href = "/?review_factory=" + encodeURIComponent(name); };
+    const rollback = button("回滚上次 DTB 升级", () => review("50-回滚上次DTB升级.sh"), "scripts");
+    if (!integration.rollback_available) { rollback.disabled = true; rollback.title = "暂无本项目创建的 DTB 升级备份"; }
+    actions(tools, button("检查硬件", () => review("00-硬件自检.sh"), "scripts"),
+      button("审查并升级 DTB", () => review("20-升级S2设备树.sh"), "scripts"), rollback,
+      button(integration.lights_enabled ? "停用电源灯美化" : "安装电源灯美化", () => review(integration.lights_enabled ? "40-停用电源灯美化.sh" : "30-安装电源灯美化.sh"), "scripts"));
+    tools.append(text("p", "操作会先进入内置工具审查；修改引导前需输入 yes 确认，不会自动重启。", "note"));
     const diagnostics = card("故障诊断", cards); diagnostics.classList.add("wide");
     table(diagnostics, [["检查", r => r.title], ["结果", r => text("span", r.ok ? "正常" : "待检查", r.ok ? "good" : "bad")], ["说明", r => r.detail], ["操作", r => r.repair ? button("重启服务", async () => { await api("diagnostics/repair", {service: r.repair}); status("已请求修复，正在重新检查"); await render(); }, "control") : "—"]], report.diagnostics);
   }

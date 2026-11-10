@@ -1499,6 +1499,7 @@
   // 中文名做主标签，单元名降级成灰色小字跟在后面 —— 排障时还得照着它敲
   // systemctl restart，只塞进 title 就多一次鼠标操作。≤760 小字让位给中文。
   const SVC_NAMES = {
+    "fnos-s2-native": "原生硬件控制",
     "fan-control": "风扇控制",
     "sata-led-manager": "硬盘指示灯管理",
     "power-led-net": "电源网络指示灯管理",
@@ -2419,22 +2420,31 @@
     const timeout = document.createElement("input"); timeout.type = "number"; timeout.min = "10"; timeout.max = "3600"; timeout.value = "600"; label.append(timeout);
     const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "取消";
     const start = document.createElement("button"); start.className = "btn primary"; start.textContent = "已审查，执行此版本";
-    dialog.append(title, summary, pre, label, cancel, start); document.body.append(dialog); dialog.showModal();
+    dialog.append(title, summary);
+    const risks = Array.isArray(info.risks) ? info.risks : [];
+    const acknowledgement = document.createElement("input"); acknowledgement.placeholder = "输入 yes 确认系统改动"; acknowledgement.setAttribute("aria-label", "确认脚本风险");
+    if (risks.length) {
+      const list = document.createElement("ul");
+      risks.forEach(risk => { const item = document.createElement("li"); item.textContent = risk; list.append(item); });
+      dialog.append(list, acknowledgement); start.disabled = true;
+      acknowledgement.oninput = () => { start.disabled = acknowledgement.value !== "yes"; };
+    }
+    dialog.append(pre, label, cancel, start); document.body.append(dialog); dialog.showModal();
     return new Promise(resolve => {
       let done = false;
       const finish = value => { if (done) return; done = true; dialog.close(); dialog.remove(); resolve(value); };
       cancel.onclick = () => finish(null); dialog.oncancel = () => finish(null);
-      start.onclick = () => { const seconds = Number(timeout.value); if (Number.isInteger(seconds) && seconds >= 10 && seconds <= 3600) finish({timeout: seconds}); else timeout.reportValidity(); };
+      start.onclick = () => { const seconds = Number(timeout.value); if (risks.length && acknowledgement.value !== "yes") return; if (Number.isInteger(seconds) && seconds >= 10 && seconds <= 3600) finish({timeout: seconds, ...(risks.length ? {risk_ack: info.sha256, risk_confirm: "yes"} : {})}); else timeout.reportValidity(); };
     });
   }
 
-  async function runScript(name) {
+  async function runScript(name, factory = false) {
     if (running) {
       toast("已有脚本在运行，等它结束再试", "err");
       return;
     }
     let inspected;
-    try { inspected = (await apiGet("/api/script/inspect?name=" + encodeURIComponent(name))).data; }
+    try { inspected = (await apiGet("/api/script/inspect?name=" + encodeURIComponent(name) + (factory ? "&factory=1" : ""))).data; }
     catch (error) { toast(error.message, "err"); return; }
     const approved = await reviewScript(inspected);
     if (!approved) return;
@@ -2452,7 +2462,7 @@
       if (termCard) termCard.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
-    const res = await apiPost("/api/script/start", { name: name, sha256: inspected.sha256, timeout: approved.timeout });
+    const res = await apiPost("/api/script/start", { name: name, sha256: inspected.sha256, factory: inspected.factory === true, ...approved });
     if (!res.ok) {
       termWrite(res.msg || "启动失败", "err");
       termStatus.textContent = "失败";
@@ -3119,7 +3129,7 @@
   function applyLiveBits(sensor, state) {
     const svc = (sensor && sensor.services) || (state && state.services) || null;
     if (svc || DEMO_EMPTY) {
-      SERVICES = SERVICES.map((v) => ({ n: v.n, s: DEMO_EMPTY ? "failed" : ((svc && svc[v.n]) || "unknown") }));
+      SERVICES = (svc && Object.keys(svc).length ? Object.keys(svc) : Object.keys(SVC_NAMES)).map((name) => ({ n: name, s: DEMO_EMPTY ? "failed" : ((svc && svc[name]) || "unknown") }));
       renderServices();
     }
     const lo = (sensor && sensor.led_override) || (state && state.conf && state.conf.led_override) || null;
@@ -3952,5 +3962,9 @@
     })
   );
 
-  refreshState().then(() => { fetchHwinfo(false); startPolling(); });
+  refreshState().then(() => {
+    fetchHwinfo(false); startPolling();
+    const review = new URLSearchParams(location.search).get("review_factory");
+    if (review) { go("control"); runScript(review, true); }
+  });
 })();

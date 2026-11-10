@@ -1,9 +1,14 @@
 #!/bin/bash
-# 卸载前：停止应用并移除开机灯光服务
+# 卸载前：禁止中断脚本任务，停止本应用拥有的可选 root 代理。
 APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
-systemctl stop s2-power-led.service >/dev/null 2>&1
-systemctl disable s2-power-led.service >/dev/null 2>&1
-rm -f /etc/systemd/system/s2-power-led.service
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/${APP_NAME}/var}"
+if [ -f /usr/local/lib/fnos-s2/s2deploy.py ]; then
+    python3 /usr/local/lib/fnos-s2/s2deploy.py uninstall-check "$VAR_DIR" || exit 1
+fi
+if systemctl cat s2hw-agent.service 2>/dev/null | grep -Fq "$APP_NAME"; then
+    systemctl disable --now s2hw-agent.service >/dev/null 2>&1 || exit 1
+    rm -f /etc/systemd/system/s2hw-agent.service
+fi
 rm -f /usr/local/bin/s2hwctl-cli
 systemctl daemon-reload >/dev/null 2>&1
 exit 0

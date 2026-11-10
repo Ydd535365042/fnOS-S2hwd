@@ -38,13 +38,15 @@ if _HWCTL_DIR not in _sys.path:
 import hwinfo  # noqa: E402
 import s2security
 import s2hardware
+import s2native
+import s2dtb
 
 # ---------------- 应用版本 ----------------
 # 装到设备上以后，应用中心会把真实版本写进 <应用根>/manifest 的 version= 字段，
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.0.2"
+APP_VER = "1.0.3"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -86,8 +88,10 @@ def board_model():
 
 # ---------------- 路径 ----------------
 ETC_SATA_LED = os.environ.get("S2_ETC_SATA_LED", "/etc/sata-led.conf")
-ETC_FAN = os.environ.get("S2_ETC_FAN", "/etc/fan-control.conf")
 APP_CONF_DIR = os.environ.get("S2_APP_CONF_DIR", "/etc/s2hwctl")
+NATIVE = s2native.Native()
+NATIVE_ENABLED = NATIVE.capabilities()["ready"] or s2native.read(os.path.join(APP_CONF_DIR, "backend")) == "native"
+ETC_FAN = os.environ.get("S2_ETC_FAN", os.path.join(APP_CONF_DIR, "fan.conf") if NATIVE_ENABLED else "/etc/fan-control.conf")
 APP_BEEP_CONF = os.path.join(APP_CONF_DIR, "beep.conf")
 LED_OVERRIDE_CONF = os.path.join(APP_CONF_DIR, "led-override.conf")
 APP_SCHED_CONF = os.environ.get("S2_SCHED_CONF", "/etc/s2-power-schedule.conf")
@@ -96,7 +100,7 @@ VAR_DIR = os.environ.get("S2_VAR_DIR", "/var/apps/fnOS-S2/var")
 SCRIPTS_DIR = os.path.join(VAR_DIR, "scripts")
 SHARE_SCRIPTS = os.environ.get("TRIM_DATA_SHARE_PATHS", "").split(":")[0]
 
-FAN_RUN_DIR = os.environ.get("S2_FAN_RUN_DIR", "/var/lib/fan-control")
+FAN_RUN_DIR = os.environ.get("S2_FAN_RUN_DIR", "/run/fnos-s2-native" if NATIVE_ENABLED else "/var/lib/fan-control")
 FAN_STATUS = os.path.join(FAN_RUN_DIR, "status")
 
 LED_DIR = os.environ.get("S2_LED_DIR", "/sys/class/leds")
@@ -112,6 +116,8 @@ HW_SERVICES = [
     "selfheal", "boot-version-guard",
     "s2-power-schedule",
 ]
+if NATIVE_ENABLED:
+    HW_SERVICES = [s2native.SERVICE, "s2-power-schedule"]
 
 # 服务名 / LED 名白名单：只允许 systemd 与 sysfs 合法字符
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
@@ -571,6 +577,10 @@ def beep(ms=280):
     except (TypeError, ValueError):
         ms = 280
     ms = max(30, min(5000, ms))
+    if NATIVE_ENABLED:
+        return NATIVE.beep(ms)
+    if not legacy_controller_available():
+        return False, "标准蜂鸣器尚未就绪，请先核对设备树；未尝试直写 GPIO"
     sec = ms / 1000.0
     if os.path.exists(BUZZER_SYSFS) and os.access(BUZZER_SYSFS, os.W_OK):
         if not sysfs_write(BUZZER_SYSFS, "buzzer_en:2"):
@@ -873,6 +883,17 @@ def _fan_fields(fan_status):
     }
 
 
+def fan_snapshot():
+    status = read_kv(FAN_STATUS) if os.path.exists(FAN_STATUS) else {}
+    if NATIVE_ENABLED:
+        node = NATIVE.fan()
+        if node:
+            value = s2native.number(s2native.read(node / "pwm1"))
+            if value is not None:
+                status = dict(status, duty_pct=str(round(value*100/255)))
+    return status
+
+
 def _thermal_zone_cpu_temp():
     """fan-control 没写 cpu_temp 时的兜底：直接读 /sys/class/thermal/thermal_zone*/temp。
     优先选 type 含 "cpu" 或 "soc" 的温区，找不到就退回 thermal_zone0；读不到返回 ""。
@@ -906,7 +927,7 @@ def collect_sensor():
 
     前端 10 秒轮询走这个端点，配置类信息走 /api/state。
     """
-    fan_status = read_kv(FAN_STATUS) if os.path.exists(FAN_STATUS) else {}
+    fan_status = fan_snapshot()
     led_ovr = read_kv(LED_OVERRIDE_CONF)
     st = {
         "root": is_root(),
@@ -976,7 +997,7 @@ def _sys_fields():
 
 
 def collect_status():
-    fan_status = read_kv(FAN_STATUS) if os.path.exists(FAN_STATUS) else {}
+    fan_status = fan_snapshot()
     # /proc/uptime 形如 "123456.78 987654.32"，只取开机秒数；读一次复用，别读两遍
     _up = sysfs_read("/proc/uptime", "").split() or _uptime_fallback()
     # 每个配置文件只读一次：原先 sched 读 3 遍、led_override 读 2 遍，
@@ -1017,6 +1038,8 @@ def collect_status():
         "framework_ver": FRAMEWORK_VER,
         "app_ver": app_version(),
         "board": board_model(),
+        "hardware_backend": "native" if NATIVE_ENABLED else "legacy",
+        "native_hardware": NATIVE.capabilities(),
         "port": os.environ.get("PORT", ""),
         "agent": os.environ.get("S2_AGENT_URL", ""),
         "net_link": net_link_info(),
@@ -1441,6 +1464,8 @@ def op_set_power_led(params):
 
 
 def op_set_led_override(params):
+    if not NATIVE_ENABLED and not legacy_controller_available():
+        return False, "硬件控制尚未就绪，请先运行硬件自检并核对设备树"
     """手动覆盖：power = auto|off，sata = auto|breathe|off。
 
     off 优先级最高（固件守护每节拍重读本配置）。breathe 是「盘休眠时绿灯 2 秒亮 /
@@ -1458,6 +1483,8 @@ def op_set_led_override(params):
         return False, "指示灯模式不对：电源灯只能是自动或全灭，硬盘灯只能是自动、休眠呼吸或全灭"
     write_kv(LED_OVERRIDE_CONF, updates,
              header="# S2硬件控制台 灯光手动覆盖（off=全灭优先级最高，breathe=休眠呼吸，auto=固件自动）")
+    if NATIVE_ENABLED:
+        return apply_native_settings("指示灯设置已保存")
     msg = []
     if "POWER_LED" in updates:
         v = updates["POWER_LED"]
@@ -1498,6 +1525,8 @@ def op_set_fan(params):
       hdd / cpu:   {t1,t2,t3,t4,d2,d3}
       D1=30 / D4=100 固定，不落盘。
     """
+    if not NATIVE_ENABLED and not legacy_controller_available():
+        return False, "硬件控制尚未就绪，请先运行硬件自检并核对设备树"
     profile = str(params.get("tempProfile") or "custom").strip().lower()
     if profile not in ("quiet", "performance", "custom"):
         return False, "风扇档位只能是静音、性能或自定义"
@@ -1554,6 +1583,8 @@ def op_set_fan(params):
     })
 
     cn = {"quiet": "节能/安静", "performance": "性能", "custom": "自定义"}[profile]
+    if NATIVE_ENABLED:
+        return apply_native_settings("风扇曲线已保存")
     # 新版 fan-control.sh 认 reload 标记：0.25 秒内重读曲线、跳过去抖立刻出风，不重启服务。
     # 以前每次都 systemctl restart：等 systemd 停起、init_pwm 先关风扇再开，点一下要好几秒才有反应。
     # 设备上还是旧脚本（没升级固件）时才退回重启服务。
@@ -1573,6 +1604,8 @@ def op_set_fan(params):
 
 def _fan_script_has(marker):
     """设备上装的 fan-control.sh 是不是认得某个新功能（按脚本里有没有这个变量名判断）。"""
+    if NATIVE_ENABLED:
+        return NATIVE.capabilities()["ready"] and marker in ("force_until", "RELOAD_FILE", "GUARD_CONF")
     try:
         with open(FAN_SCRIPT, "r", encoding="utf-8", errors="ignore") as f:
             return marker in f.read()
@@ -1585,6 +1618,24 @@ FAN_FORCE = os.path.join(FAN_RUN_DIR, "force_until")
 FAN_RELOAD = os.path.join(FAN_RUN_DIR, "reload")
 
 
+def legacy_controller_available():
+    return os.path.isfile(FAN_SCRIPT) and os.path.isfile(ETC_FAN)
+
+
+def apply_native_settings(message):
+    if not NATIVE.capabilities()["ready"]:
+        return False, NATIVE.capabilities()["detail"]
+    if service_active(s2native.SERVICE) != "active":
+        ok, detail = restart_service(s2native.SERVICE)
+        if not ok: return False, message + "，原生硬件服务未启动，请查看诊断"
+    return True, message + "，原生硬件服务将在下一次采样应用"
+
+
+def restart_hardware_services():
+    names = [s2native.SERVICE] if NATIVE_ENABLED else ["fan-control", "power-led-net"]
+    for name in names: restart_service(name)
+
+
 def op_fan_test(params):
     """风扇全速测试：写 force_until（到期 epoch 秒），fan-control.sh 每 3 秒看一次，
     到期前 100%、不去抖，到期自己回温控。
@@ -1594,8 +1645,11 @@ def op_fan_test(params):
     sec=0 立即结束测试。
     """
     sec = max(0, min(60, _as_int(params.get("sec", 10), 10)))
+    if NATIVE_ENABLED and sec:
+        ok, message = apply_native_settings("准备风扇全速测试")
+        if not ok: return False, message
     if not _fan_script_has("force_until"):
-        return False, "设备上的风扇服务版本较旧，不支持全速测试，请在控制页运行「部署全部硬件配置」后再试"
+        return False, "风扇控制尚未支持全速测试，请先核对设备树与硬件控制服务"
     until = int(time.time()) + sec if sec else 0
     try:
         os.makedirs(FAN_RUN_DIR, exist_ok=True)
@@ -1648,6 +1702,11 @@ def op_service(params):
 
 def op_logs(params):
     name = params.get("name", "sata-led")
+    if NATIVE_ENABLED and name in ("sata-led", "fan", "power-led", "selfheal"):
+        unit = "fnos-s2-dtb-guard.service" if name == "selfheal" else s2native.SERVICE
+        count = max(1, min(1000, _as_int(params.get("n", 120), 120)))
+        code, output = run(["journalctl", "-u", unit, "-n", str(count), "--no-pager"], timeout=10)
+        return (True, {"lines": output.splitlines()}) if not code else (False, "无法读取原生服务日志，请检查日志权限")
     paths = {
         "sata-led": "/var/log/sata-led.log",
         "fan": "/var/log/fan_control.log",          # fan-control.sh 的 LOG_FILE 是下划线
@@ -1701,6 +1760,15 @@ OPS = {
 
 
 def dispatch(op, params):
+    if op == "integration_status":
+        try:
+            units = services_state([s2native.SERVICE, "fnos-s2-dtb-guard.path", "fnos-s2-led-boot", "fnos-s2-led-shutdown"])
+            return True, {"backend": "native" if NATIVE_ENABLED else "legacy" if legacy_controller_available() else "unavailable",
+                "native": NATIVE.capabilities(), "dtb": s2dtb.state(NATIVE.root), "services": units,
+                "lights_enabled": (NATIVE.conf/"led-beautify.enabled").exists(),
+                "rollback_available": (NATIVE.root/"var/lib/fnos-s2/last-dtb-backup").is_file()}
+        except (OSError, ValueError):
+            return False, "无法读取设备树与原生硬件状态，请检查权限"
     if op in s2hardware.OPS:
         return s2hardware.dispatch(_sys.modules[__name__], op, params)
     fn = OPS.get(op)

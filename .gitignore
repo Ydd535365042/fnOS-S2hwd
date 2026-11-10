@@ -4,3 +4,15 @@ __pycache__/
 *.pyc
 Thumbs.db
 fpk/app.tgz
+
+# 本地验证与审查资料不进入源码发布仓库
+/tests/
+/_tests/
+/legacy/
+/docs/*-plan.md
+/docs/*-audit-*.md
+/.pytest_cache/
+/.coverage
+/coverage/
+/test-results/
+/playwright-report/

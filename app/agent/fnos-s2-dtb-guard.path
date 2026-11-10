@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch only S2 boot selection and DTB directory
+
+[Path]
+PathChanged=/boot/fnEnv.txt
+PathChanged=/boot/dtb/rockchip
+Unit=fnos-s2-dtb-guard.service
+
+[Install]
+WantedBy=multi-user.target

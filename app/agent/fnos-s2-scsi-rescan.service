@@ -1,0 +1,13 @@
+[Unit]
+Description=Rescan S2 SCSI hosts once after a verified board boot
+DefaultDependencies=no
+After=local-fs.target systemd-udev-settle.service
+Before=trim_init.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/fnos-s2/s2dtb.py rescan
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -60,6 +60,7 @@ import hwctl  # noqa: E402
 import hwinfo  # noqa: E402  （只读本地兜底路径用：非 root 且无 agent 时的 /api/hwinfo）
 import s2security
 import s2ops
+import s2risk
 from s2store import Problem, ALL_SCOPES
 import alerts  # noqa: E402  （硬件告警：后台线程定时检查，记录给右上角铃铛）
 
@@ -83,8 +84,8 @@ DANGER_PATHS = ("/api/script/save", "/api/script/start", "/api/script/upload",
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 # 所有硬件写操作均通过敏感操作授权；只读查询可以保留无口令访问。
-READ_OPS = ("status", "hwinfo", "logs")
-OPS_READ = {"me", "overview", "history", "disks", "diagnostics", "report", "schedule", "guard", "fleet"}
+READ_OPS = ("status", "hwinfo", "logs", "integration_status")
+OPS_READ = {"me", "overview", "history", "disks", "diagnostics", "report", "schedule", "guard", "fleet", "integration"}
 OPS_CONTROL = {"schedule", "maintenance", "guard", "diagnostics/repair"}
 _OPS = None
 _OPS_LOCK = threading.Lock()
@@ -283,7 +284,7 @@ def hw_call(op, params):
         force = bool(params.get("force"))
         return {"ok": True, "msg": "只读模式（未检测到管理员权限代理，缺少健康检测数据）",
                 "data": hwinfo.collect_hwinfo(force=force)}
-    if op in ("config_snapshot", "config_validate", "schedule_info", "fan_guard_info", "diagnostics_files"):
+    if op in ("config_snapshot", "config_validate", "schedule_info", "fan_guard_info", "diagnostics_files", "integration_status"):
         return _shape_hw_result(*hwctl.dispatch(op, params))
     return {"ok": False, "msg": "当前为普通用户身份且未部署管理员权限代理，无法写入硬件；"
                                "请以管理员权限部署 s2hw-agent，或在应用中心改用管理员权限安装。",
@@ -543,8 +544,11 @@ def start_job(path, timeout=600, expected_hash=None):
         return job
 
     try:
-        os.makedirs(JOBS_DIR, exist_ok=True)
-        open(log, "wb").close()
+        if os.path.islink(JOBS_DIR): raise OSError("任务目录不能是符号链接")
+        os.makedirs(JOBS_DIR, mode=0o700, exist_ok=True)
+        os.chmod(JOBS_DIR, 0o700)
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
     except OSError as e:
         return fail(["无法创建任务日志：%s" % e], 1)
 
@@ -559,8 +563,10 @@ def start_job(path, timeout=600, expected_hash=None):
     if path.lower().endswith(".run"):
         env["S2_FAKE_ROOT"] = "1"
     # 独立 Python 监督进程负责超时、取消、退出码及临时快照清理。
-    # Snapshot in the same directory keeps scripts sourcing ./_common.sh compatible.
-    path = os.path.join(os.path.dirname(original), ".s2job-" + job + os.path.splitext(original)[1])
+    # User scripts keep relative-file semantics; bundled standalone tools must also work
+    # when the application package itself is mounted read-only.
+    snapshot_dir = JOBS_DIR if os.path.realpath(os.path.dirname(original)) == os.path.realpath(DEFAULT_SCRIPTS_DIR) else os.path.dirname(original)
+    path = os.path.join(snapshot_dir, ".s2job-" + job + os.path.splitext(original)[1])
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
         with os.fdopen(fd, "wb") as stream:
@@ -592,8 +598,17 @@ def start_job(path, timeout=600, expected_hash=None):
 SCRIPT_START_LOCK = threading.Lock()
 
 
-def inspect_script(name):
-    path = script_by_name(name)
+FACTORY_ACTIONS = {"00-硬件自检.sh", "10-收集诊断信息.sh", "20-升级S2设备树.sh", "30-安装电源灯美化.sh", "40-停用电源灯美化.sh", "50-回滚上次DTB升级.sh"}
+
+
+def factory_script(name):
+    if name not in FACTORY_ACTIONS: return None
+    path = os.path.join(DEFAULT_SCRIPTS_DIR, name)
+    return path if os.path.isfile(path) and not os.path.islink(path) else None
+
+
+def inspect_script(name, factory=False):
+    path = factory_script(name) if factory else script_by_name(name)
     if not path:
         raise Problem("脚本不存在", 404)
     with open(path, "rb") as stream:
@@ -603,9 +618,11 @@ def inspect_script(name):
     digest = hashlib.sha256(content).hexdigest()
     preview = content[:65536].decode("utf-8", "replace")
     with get_ops().store.db() as db:
-        old = db.execute("SELECT hash,content FROM scripts WHERE name=?", (name,)).fetchone()
+        old = db.execute("SELECT hash,content FROM scripts WHERE name=?", (("factory:" if factory else "")+name,)).fetchone()
     return {"name": name, "sha256": digest, "size": len(content), "content": preview,
-            "source": "应用脚本库" if os.path.dirname(path) == SCRIPTS_DIR else "共享目录",
+            "factory": factory,
+            "risks": s2risk.inspect(content, name, DEFAULT_SCRIPTS_DIR),
+            "source": "随包内置工具" if factory else "应用脚本库" if os.path.dirname(path) == SCRIPTS_DIR else "共享目录",
             "changed": not old or old["hash"] != digest, "truncated": len(content) > 65536,
             "diff": "\n".join(difflib.unified_diff((old["content"] if old else "").splitlines(), preview.splitlines(),
                                                 fromfile="上次执行", tofile="当前内容", lineterm=""))}
@@ -1276,7 +1293,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self._json(hw_call("logs", {"name": name}))
         elif path == "/api/script/inspect":
             try:
-                self._json({"ok": True, "data": inspect_script((q.get("name") or [""])[0])})
+                self._json({"ok": True, "data": inspect_script((q.get("name") or [""])[0], q.get("factory") == ["1"])})
             except Problem as error:
                 self._json({"ok": False, "msg": str(error)}, error.status)
         elif path == "/api/script/jobs":
@@ -1536,15 +1553,18 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
         elif path == "/api/script/start":
             name = os.path.basename(str(body.get("name", "") or ""))
-            p = script_by_name(name)
+            factory = body.get("factory") is True
+            p = factory_script(name) if factory else script_by_name(name)
             if not p:
                 self._json({"ok": False, "msg": "脚本不存在"})
                 return
             try:
                 with SCRIPT_START_LOCK:
-                    inspected = inspect_script(name)
+                    inspected = inspect_script(name, factory)
                     if body.get("sha256") != inspected["sha256"]:
                         raise Problem("请先审查脚本内容并确认摘要", 409)
+                    if inspected["risks"] and (body.get("risk_confirm") != "yes" or body.get("risk_ack") != inspected["sha256"]):
+                        raise Problem("此脚本包含系统改动，请查看风险并输入 yes 确认当前版本", 409)
                     active_jobs = [j for j in managed_jobs() if not j["done"]]
                     if len(active_jobs) >= MAX_JOBS:
                         raise Problem("正在运行的任务已达到上限", 409)
@@ -1554,7 +1574,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
                     timeout = integer(body.get("timeout", 600), 10, 3600)
                     job = start_job(p, timeout=timeout, expected_hash=inspected["sha256"])
                     with get_ops().store.db() as db:
-                        db.execute("INSERT OR REPLACE INTO scripts VALUES (?,?,?)", (name, inspected["sha256"], inspected["content"]))
+                        db.execute("INSERT OR REPLACE INTO scripts VALUES (?,?,?)", (("factory:" if factory else "")+name, inspected["sha256"], inspected["content"]))
                 audit("script:start", {"name": name, "sha256": inspected["sha256"]}, remote, True)
                 self._json({"ok": True, "job": job, "name": name})
             except Problem as error:

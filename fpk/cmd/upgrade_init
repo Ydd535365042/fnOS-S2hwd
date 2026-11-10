@@ -1,11 +1,12 @@
 #!/bin/bash
 # 升级前：备份配置与脚本
 set -u
+umask 077
 APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
 VAR_DIR="${TRIM_PKGVAR:-/var/apps/${APP_NAME}/var}"
 ETC_DIR="${TRIM_PKGETC:-/var/apps/${APP_NAME}/etc}"
-BK="${VAR_DIR}/backup-$(date +%Y%m%d%H%M%S)"
-mkdir -p "$BK"
+mkdir -p "$VAR_DIR"
+BK="$(mktemp -d "${VAR_DIR}/backup-$(date +%Y%m%d%H%M%S)-XXXXXX")" || exit 1
 [ -f "${ETC_DIR}/settings.conf" ] && cp -f "${ETC_DIR}/settings.conf" "$BK/"
 [ -d "$VAR_DIR/scripts" ] && cp -a "$VAR_DIR/scripts" "$BK/" 2>/dev/null
 echo "$BK" > "${VAR_DIR}/last_backup"

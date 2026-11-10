@@ -1,0 +1,16 @@
+[Unit]
+Description=fnOS-S2 optional boot light and prompt
+After=local-fs.target fnos-s2-dtb-guard.service
+Before=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/fnos-s2/s2lights.py boot
+TimeoutStopSec=2
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

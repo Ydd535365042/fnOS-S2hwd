@@ -21,6 +21,8 @@ APP, FPK, OUT, VER, CHANGELOG = sys.argv[1:6]  # 例：app fpk out.fpk 1.0.0 cha
 MTIME = int(time.time())
 SKIP_DIRS = {"__pycache__", ".git", "node_modules"}
 SKIP_EXT = (".pyc", ".pyo", ".tmp", ".bak", ".orig")
+FIRMWARE_FILES = {"s2_disk.py", "s2_schedule.py", "s2-power-schedule.sh", "s2-power-schedule.service",
+                  "s2-power-shutdown.service", "s2-power-shutdown.timer"}
 
 
 def info(name, size, mode, is_dir=False):
@@ -82,6 +84,10 @@ for root, dirs, files in os.walk(APP):
         p = os.path.join(root, fn)
         name = fn
         arc = (name if rel == "." else rel + "/" + name)
+        if rel == "firmware" and fn not in FIRMWARE_FILES:
+            continue  # Only ship the runtime helpers used by the native integration.
+        if arc in ("agent/s2-power-led-apply.sh", "agent/s2-power-led.service"):
+            continue
         with open(p, "rb") as f:
             data = lf_only(arc, f.read())
         app_entries.append((arc, data, 0o705))
@@ -152,8 +158,11 @@ for need in ("server/server.py", "server/hwctl.py", "server/hwinfo.py", "server/
              "server/s2store.py", "server/s2ops.py", "server/s2hardware.py", "server/job_runner.py",
              "server/public/manage.html", "server/public/manage.js", "server/public/manage.css", "firmware/s2_schedule.py",
              "firmware/s2_disk.py",
-             "server/public/index.html", "server/public/style.css", "agent/s2hw-agent.py", "firmware/deploy.sh",
-             "firmware/fan-control.sh", "server/default_scripts/00-部署全部硬件配置.sh", "server/default_scripts/_common.sh"):
+             "server/public/index.html", "server/public/style.css", "agent/s2hw-agent.py",
+             "server/s2native.py", "server/s2activation.py", "server/s2deploy.py", "server/s2dtb.py", "server/s2lights.py",
+             "server/s2risk.py",
+             "agent/fnos-s2-native.service", "agent/fnos-s2-dtb-guard.path", "agent/fnos-s2-led-boot.service",
+             "dtb/rk3568-witxiaohui-s2.dtb", "server/default_scripts/00-硬件自检.sh", "server/default_scripts/20-升级S2设备树.sh"):
     if need not in an:
         errs.append("app.tgz 缺 " + need)
 ds = sorted(n.rsplit("/", 1)[1] for n in an if n.startswith("server/default_scripts/") and n.endswith(".sh"))

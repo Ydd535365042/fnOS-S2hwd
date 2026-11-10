@@ -389,6 +389,8 @@ class Operations:
             return {"maintenance": self.maintenance(), "last_sample": self.last_sample,
                     "last_error": self.last_error, "retention_days": self.store.get("retention_days", 30),
                     "history_enabled": self.history_enabled}
+        if route == "integration":
+            return self.call("integration_status")
         if route == "history":
             return self.history(query)
         if route == "disks":

@@ -1,0 +1,9 @@
+{
+  "source": "用户提供 S2自愈最小包-1.1.2.run",
+  "package_sha256": "8282a0fd36ee79bfc477bb5f782b761ff70ba17146d9909510ab1abcabc40c71",
+  "payload_sha256": "2d2b1b0263a038f14f9abefe69bf2a85cbd518e2ce64a8f0c3679e7120c5e198",
+  "dtb_sha256": "6dc95aac914dfe5618f09027d31190ae0b84a7efdcc797fa0fa39ecfbbeeb509",
+  "dtb_md5": "5a72e85526b1372ffffaddee7c9da3e2",
+  "size": 74587,
+  "model": "Rockchip RK3568 WITXIAOHUI S2 Board NAS"
+}

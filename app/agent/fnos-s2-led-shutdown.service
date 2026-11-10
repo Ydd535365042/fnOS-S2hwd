@@ -1,0 +1,18 @@
+[Unit]
+Description=fnOS-S2 optional shutdown light and prompt
+DefaultDependencies=no
+After=fnos-s2-native.service fnos-s2-led-boot.service
+Before=shutdown.target reboot.target halt.target poweroff.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/lib/fnos-s2/s2lights.py shutdown
+TimeoutStopSec=1
+KillMode=control-group
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=shutdown.target reboot.target halt.target poweroff.target

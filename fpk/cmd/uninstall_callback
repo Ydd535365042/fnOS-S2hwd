@@ -1,12 +1,13 @@
 #!/bin/bash
 # 卸载后：按向导选择决定是否清理数据
 set -u
-VAR_DIR="${TRIM_PKGVAR:-/var/apps/${TRIM_APPNAME:-fnOS-S2}/var}"
-rm -f /usr/local/sbin/s2-power-led-apply.sh
+APP_NAME="${TRIM_APPNAME:-fnOS-S2}"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/${APP_NAME}/var}"
+if [ -f /usr/local/lib/fnos-s2/s2deploy.py ]; then
+    python3 /usr/local/lib/fnos-s2/s2deploy.py uninstall || exit 1
+fi
 if [ "${wizard_data_action:-keep}" = "delete" ]; then
-    # 同 install_callback：变量可能没注入，set -u 下不能直接展开。
-    # 空串交给 rm -f 无害（实测 rc=0、无输出），VAR_DIR 照常清理。
-    SHARE_DIR="${TRIM_DATA_SHARE_PATHS:-}"
-    rm -rf "${VAR_DIR}" "${SHARE_DIR}" 2>/dev/null
+    # 只清理经过归属校验的私有数据，共享脚本与引导备份保留。
+    python3 /usr/local/lib/fnos-s2/s2deploy.py remove-data "$VAR_DIR" --app-name "$APP_NAME" || exit 1
 fi
 exit 0

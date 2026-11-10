@@ -87,6 +87,9 @@ def set_schedule(hw, body):
         "SHUTDOWN_TIME": config["shutdown_time"], "BOOT_TIME": config["boot_time"],
         "WEEKDAYS": ",".join(map(str, config["weekdays"])), "SKIP_DATES": ",".join(config["skip_dates"]),
         "MAINTENANCE_UNTIL": str(config["maintenance_until"])})
+    if hw.NATIVE_ENABLED:
+        rc, output = hw.run(["systemctl", "enable" if config["enabled"] else "disable", "s2-power-schedule.service"], timeout=30)
+        if rc: return False, "计划已保存，但开机计划服务设置失败"
     if os.path.exists(hw.SCHED_APPLY_BIN):
         rc, output = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
         if rc:
@@ -155,8 +158,7 @@ def dispatch(hw, operation, body):
                         elif os.path.isfile(path):
                             os.unlink(path)
                     hw._KV_CACHE.clear()
-                    hw.restart_service("fan-control")
-                    hw.restart_service("power-led-net")
+                    hw.restart_hardware_services()
                     if os.path.exists(hw.SCHED_APPLY_BIN):
                         hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
                     return False, "恢复失败，已回滚配置文件；请检查服务状态"

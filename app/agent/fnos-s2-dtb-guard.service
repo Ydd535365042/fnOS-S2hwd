@@ -1,0 +1,16 @@
+[Unit]
+Description=fnOS-S2 verified DTB and fdtfile guard
+After=local-fs.target
+Before=fnos-s2-native.service
+ConditionPathExists=/var/lib/fnos-s2/dtb.ref
+StartLimitIntervalSec=30
+StartLimitBurst=20
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/python3 /usr/local/lib/fnos-s2/s2dtb.py guard
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

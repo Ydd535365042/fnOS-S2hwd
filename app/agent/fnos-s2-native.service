@@ -1,0 +1,22 @@
+[Unit]
+Description=fnOS-S2 native hardware controller
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecCondition=/usr/bin/python3 /usr/local/lib/fnos-s2/s2native.py --wait-ready
+ExecStartPre=/usr/bin/python3 /usr/local/lib/fnos-s2/s2activation.py
+ExecStart=/usr/bin/python3 /usr/local/lib/fnos-s2/s2native.py run
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=fnos-s2-native
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/etc/s2hwctl /etc/systemd/system /var/lib/fnos-s2
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

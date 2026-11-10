@@ -70,11 +70,7 @@ class H(BaseHTTPRequestHandler):
         if not self._authorized():
             self._json({"ok": False, "msg": "代理认证失败"}, 401)
             return
-        if self.path != "/hw":
-            self._json({"ok": False, "msg": "未知接口"}, 404)
-            return
-        if (self.headers.get("Origin") or self.headers.get("Transfer-Encoding")
-                or self.headers.get("Content-Type", "").split(";")[0].lower() != "application/json"):
+        if self.headers.get("Transfer-Encoding"):
             self._json({"ok": False, "msg": "代理请求格式错误"}, 400)
             return
         if hwctl is None:
@@ -91,7 +87,21 @@ class H(BaseHTTPRequestHandler):
             self._json({"ok": False, "msg": "请求体过大或长度非法"}, 413)
             return
         try:
-            body = json.loads(self.rfile.read(n).decode("utf-8"))
+            raw = self.rfile.read(n)
+        except OSError:
+            self._json({"ok": False, "msg": "请求体读取失败"}, 400)
+            return
+        # Authenticated, bounded requests are consumed before rejecting their route/origin.
+        # Closing with unread bytes otherwise intermittently resets Windows clients instead of
+        # delivering the intended 400/404 response. Unauthenticated bodies remain unread.
+        if self.path != "/hw":
+            self._json({"ok": False, "msg": "未知接口"}, 404)
+            return
+        if self.headers.get("Origin") or self.headers.get("Content-Type", "").split(";")[0].lower() != "application/json":
+            self._json({"ok": False, "msg": "代理请求格式错误"}, 400)
+            return
+        try:
+            body = json.loads(raw.decode("utf-8"))
         except Exception:
             self._json({"ok": False, "msg": "请求体解析失败"}, 400)
             return

@@ -16,8 +16,8 @@ PORT="${wizard_port:-18899}"
 case "$PORT" in
     ''|*[!0-9]*) echo "端口必须是数字：${PORT}" > "$LOG_OUT"; exit 1 ;;
 esac
-if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
-    echo "端口范围需在 1-65535 之间：${PORT}" > "$LOG_OUT"
+if [ "${#PORT}" -gt 5 ] || [ "$PORT" -lt 1024 ] || [ "$PORT" -gt 65535 ]; then
+    echo "端口范围需在 1024-65535 之间：${PORT}" > "$LOG_OUT"
     exit 1
 fi
 
