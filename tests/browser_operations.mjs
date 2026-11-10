@@ -75,7 +75,7 @@ try {
   await ev(`document.getElementById('tk').value='fixture-password'; document.querySelector('form').requestSubmit()`);
   await until(`location.pathname === '/' && !!document.getElementById('set-host')`, "login");
   await cmd("Page.navigate", {url: base + "/manage.html"});
-  await until(`document.querySelectorAll('#navigation button').length === 12 && !document.getElementById('refresh').disabled && !!document.querySelector('#workspace table')`, "operations health");
+  await until(`document.querySelectorAll('#navigation button').length === 11 && !document.getElementById('refresh').disabled && !!document.querySelector('#workspace table')`, "operations health");
   check(await ev(`document.getElementById('workspace').textContent.includes('当前无活动告警')`), "health report and diagnostics render from backend");
   const nav = async key => {
     await ev(`document.querySelector('#navigation [data-page="${key}"]').click()`);
@@ -116,14 +116,12 @@ try {
   await nav("notifications"); await set("Webhook 地址","https://notify.example/alerts"); await set("Bearer 凭据（留空保留原值）","fixture-notify-secret"); await set("启用通知",true,true); await click("保存通知设置"); await saved("通知设置已保存");
   check(await ev(`document.querySelector('[aria-label="Bearer 凭据（留空保留原值）"]').value === '' && !document.getElementById('workspace').textContent.includes('fixture-notify-secret')`), "saved notification credentials are not exposed back to the page");
   await nav("audit"); check(await ev(`document.querySelectorAll('tbody tr').length >= 5`), "audit page lists performed actions");
-  await nav("users"); await set("账号（2–32 位）","admin-fixture"); await set("新密码（12–128 位；编辑时留空保持）","fixture-user-password"); await set("权限","admin"); await click("保存账号"); await saved("账号已保存");
-  await set("账号（2–32 位）","viewer-fixture"); await set("新密码（12–128 位；编辑时留空保持）","fixture-user-password"); await set("权限","viewer"); await click("保存账号"); await saved("账号已保存");
-  check(await ev(`document.querySelectorAll('tbody tr').length === 2`), "account creation supports admin and viewer roles");
+  check(await ev(`!document.querySelector('#navigation [data-page="users"]')`), "account management navigation is removed");
   await nav("keys"); await set("用途名称","browser-monitor"); await click("创建密钥"); await saved("密钥已创建");
   const key = await ev(`document.querySelector('#workspace pre').textContent`);
   check(key.startsWith("s2k_"), "API key is displayed once after creation");
-  const response = await fetch(base + "/api/ops/users", {headers:{Authorization:"Bearer " + key}});
-  check(response.status === 403, "new read-only key cannot access accounts");
+  const response = await fetch(base + "/api/ops/keys", {headers:{Authorization:"Bearer " + key}});
+  check(response.status === 403, "new read-only key cannot manage keys");
   await nav("devices"); await set("设备名称","Fixture NAS"); await set("控制台地址（建议 HTTPS）","https://nas.example"); await set("目标设备只读密钥",key); await click("添加设备"); await saved("设备已添加");
   check(await ev(`document.getElementById('workspace').textContent.includes('Fixture NAS') && document.getElementById('workspace').textContent.includes('在线')`), "fleet dashboard aggregates an explicitly registered device using a mock transport");
   await nav("keys"); await click("撤销"); await saved("密钥已撤销");
@@ -140,7 +138,7 @@ try {
   check(await ev(`document.getElementById('workspace').textContent.includes('fixture.sh')`), "job history displays a completed execution and result");
   for(const width of [1440,390,360]) {
     await cmd("Emulation.setDeviceMetricsOverride",{width,height:900,deviceScaleFactor:1,mobile:width<620});
-    for(const page of ["health","history","backups","schedule","users","devices"]) {
+    for(const page of ["health","history","backups","schedule","keys","devices"]) {
       await nav(page); check(await ev(`document.documentElement.scrollWidth <= innerWidth + 1`), `${width}px ${page} has no horizontal page overflow`);
     }
   }
@@ -148,12 +146,12 @@ try {
   await nav("health"); const shot=await cmd("Page.captureScreenshot",{format:"png"}); writeFileSync(join(shots,"operations-mobile.png"),Buffer.from(shot.data,"base64"));
   await cmd("Emulation.setDeviceMetricsOverride",{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
   const desktop=await cmd("Page.captureScreenshot",{format:"png"}); writeFileSync(join(shots,"operations-desktop.png"),Buffer.from(desktop.data,"base64"));
-  await ev(`document.getElementById('signout').click()`); await until(`location.pathname === '/login' && !!document.getElementById('username')`, "account login");
-  await ev(`document.getElementById('username').value='viewer-fixture'; document.getElementById('tk').value='fixture-user-password'; document.querySelector('form').requestSubmit()`);
-  await until(`location.pathname === '/'`, "viewer login");
-  await cmd("Page.navigate",{url:base+"/manage.html"}); await until(`document.getElementById('identity')?.textContent.includes('viewer-fixture') && !document.getElementById('refresh').disabled`, "viewer center");
-  check(await ev(`!document.querySelector('#navigation [data-page="users"]') && !document.querySelector('#navigation [data-page="keys"]')`), "viewer navigation excludes account and key administration");
-  await nav("guard"); check(await ev(`Array.from(document.querySelectorAll('#workspace button')).find(b=>b.textContent==='保存保护策略').disabled`), "viewer cannot submit hardware policy changes");
+  await ev(`document.getElementById('signout').click()`); await until(`location.pathname === '/login' && !!document.getElementById('tk')`, "passphrase login");
+  check(await ev(`!document.getElementById('username') && document.querySelectorAll('form input:not([type="hidden"])').length === 1`), "login requires only the access passphrase");
+  await ev(`document.getElementById('tk').value='fixture-password'; document.querySelector('form').requestSubmit()`);
+  await until(`location.pathname === '/'`, "passphrase re-login");
+  await cmd("Page.navigate",{url:base+"/manage.html"}); await until(`document.getElementById('identity')?.textContent === '访问口令已验证' && !document.getElementById('refresh').disabled`, "passphrase operations page");
+  check(await ev(`!document.querySelector('#navigation [data-page="users"]')`), "operations page has no account or role management");
   check(errors.length===0,"no uncaught frontend exceptions across operations workflows");
   console.log(`Operations browser checks passed: ${checks}`);
 

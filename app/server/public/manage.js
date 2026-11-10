@@ -15,7 +15,7 @@
   const allowed = scope => principal?.scopes?.includes(scope);
   function status(message, error = false) { $("status").textContent = message; $("status").className = error ? "error" : ""; $("status").hidden = !message; }
   async function api(path, body) {
-    const token = sessionStorage.getItem("s2-session") || "";
+    const token = window.S2Auth.get();
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), path === "restore" ? 180000 : path.endsWith("fleet") ? 90000 : 45000);
     try {
       const response = await fetch(path.startsWith("/api/") ? path : "/api/ops/" + path, {
@@ -23,7 +23,7 @@
         headers: {...(token ? {Authorization: "Bearer " + token} : {}), ...(body === undefined ? {} : {"Content-Type": "application/json", "X-S2-Request": "1"})},
         body: body === undefined ? undefined : JSON.stringify(body)
       });
-      if (response.status === 401) { sessionStorage.removeItem("s2-session"); location.replace("/login"); throw new Error("请重新登录"); }
+      if (response.status === 401) { window.S2Auth.clear(); location.replace("/login"); throw new Error("请重新登录"); }
       let result; try { result = await response.json(); } catch (_) { throw new Error("设备响应无法识别"); }
       if (!response.ok || result?.ok !== true) throw new Error(result?.msg || "操作失败");
       return result.data === undefined ? result : result.data;
@@ -130,11 +130,11 @@
   async function previewRestore(body) { restore = await api("restore/preview", body); $("review-diff").textContent = restore.diff || "配置没有变化"; $("review").showModal(); }
   async function backups() {
     const panel = card("配置备份与恢复"), label = field(panel, "备份说明", "手动备份");
-    panel.append(text("p", "包含风扇、灯光、蜂鸣、计划和风扇保护。账号、访问密钥和通知凭据不会导出。", "note"));
+    panel.append(text("p", "包含风扇、灯光、蜂鸣、计划和风扇保护。访问口令、访问密钥和通知凭据不会导出。", "note"));
     const file = field(panel, "导入备份文件", "", "file"); file.accept = ".json,application/json";
     actions(panel, button("创建并下载备份", async () => { const data = await api("backup", {label: label.value}); download("s2-config-" + data.id + ".json", data); status("备份已保存"); await render(); }, "admin", "primary"),
       button("预览导入差异", async () => { const selected = file.files[0]; if (!selected || selected.size > 65536) throw new Error("请选择不超过 64 KB 的备份 JSON 文件"); const data = JSON.parse(await selected.text()); if (data.format !== "s2-config-v1") throw new Error("不是本应用的配置备份"); await previewRestore({config: data.config}); }, "admin"));
-    const versions = card("配置修改历史"); table(versions, [["时间", r => date(r.ts)], ["账号", r => r.actor], ["说明", r => r.label], ["操作", r => button("比较并回退", () => previewRestore({id: r.id}), "admin")]], await api("versions"));
+    const versions = card("配置修改历史"); table(versions, [["时间", r => date(r.ts)], ["操作身份", r => r.actor], ["说明", r => r.label], ["操作", r => button("比较并回退", () => previewRestore({id: r.id}), "admin")]], await api("versions"));
   }
   async function schedule() {
     const data = await api("schedule"), panel = card("每周定时计划"), row = fields(panel);
@@ -171,15 +171,9 @@
     const deliveries = card("投递记录"); table(deliveries, [["时间", r => date(r.ts)], ["状态", r => ({sent: "已发送", pending: "等待重试", failed: "失败", suppressed: "维护期间抑制"})[r.status]], ["尝试次数", r => r.attempts], ["说明", r => r.error]], data.deliveries);
   }
   async function audit() {
-    const panel = card("操作审计"), row = fields(panel), actor = field(row, "账号筛选"), action = field(row, "动作筛选"), results = text("div", ""); let records = [];
-    const search = async () => { records = await api("audit?actor=" + encodeURIComponent(actor.value) + "&action=" + encodeURIComponent(action.value)); results.replaceChildren(); table(results, [["时间", r => date(r.ts)], ["账号", r => r.actor], ["来源", r => r.ip], ["动作", r => r.action], ["结果", r => r.ok ? "成功" : "失败"]], records); };
+    const panel = card("操作审计"), row = fields(panel), actor = field(row, "操作身份筛选"), action = field(row, "动作筛选"), results = text("div", ""); let records = [];
+    const search = async () => { records = await api("audit?actor=" + encodeURIComponent(actor.value) + "&action=" + encodeURIComponent(action.value)); results.replaceChildren(); table(results, [["时间", r => date(r.ts)], ["操作身份", r => r.actor], ["来源", r => r.ip], ["动作", r => r.action], ["结果", r => r.ok ? "成功" : "失败"]], records); };
     actions(panel, button("查询", search), button("导出 CSV", () => download("s2-audit.csv", csv(records), "text/csv"))); panel.append(results); await search();
-  }
-  async function users() {
-    const panel = card("账号管理"), row = fields(panel), name = field(row, "账号（2–32 位）"), password = field(row, "新密码（12–128 位；编辑时留空保持）", "", "password"), role = field(row, "权限", "viewer", "select", [["viewer", "只读"], ["operator", "硬件操作员"], ["admin", "管理员"]]), enabled = field(row, "启用账号", true, "checkbox");
-    panel.append(text("p", "操作员可以调整硬件与计划。脚本、配置恢复、账号和密钥仅管理员可用。修改账号后，其已有会话会失效。", "note"));
-    actions(panel, button("保存账号", async () => { await api("users", {name: name.value, password: password.value, role: role.value, enabled: enabled.checked}); password.value = ""; status("账号已保存"); await render(); }, "admin", "primary"));
-    const list = card("已有账号"); table(list, [["账号", r => r.name], ["角色", r => ({admin: "管理员", operator: "操作员", viewer: "只读"})[r.role]], ["状态", r => r.enabled ? "启用" : "停用"], ["操作", r => button("编辑", () => { name.value = r.name; password.value = ""; role.value = r.role; enabled.checked = !!r.enabled; name.focus(); }, "admin")]], await api("users"));
   }
   async function keys() {
     const panel = card("自动化访问密钥"), row = fields(panel), label = field(row, "用途名称"), days = field(row, "有效天数（1–365）", "30", "number"), permissions = fields(panel);
@@ -202,7 +196,7 @@
     const panel = card("脚本任务"); panel.append(text("p", "从硬件控制台审查脚本内容后执行。同一脚本不能重复启动，任务超时自动终止。", "note"));
     const rows = await api("/api/script/jobs"); table(panel, [["脚本", r => r.name], ["状态", r => r.done ? "已结束，退出码 " + r.rc : "运行中"], ["超时", r => r.timeout + " 秒"], ["操作", r => { const div = text("div", "", "actions"); div.append(button("查看输出", () => { const d = document.createElement("dialog"); d.className = "ops-review"; d.append(text("h2", r.name), text("pre", r.lines.join("\n")), button("关闭", () => { d.close(); d.remove(); })); document.body.append(d); d.showModal(); })); if (!r.done) div.append(button("取消任务", async () => { await api("/api/script/cancel", {id: r.id}); status("已请求取消，请稍后刷新"); }, "scripts")); return div; }]], rows);
   }
-  const pages = {health: ["设备健康", health, "read"], history: ["历史监控", history, "read"], disks: ["磁盘趋势", disks, "read"], backups: ["备份与版本", backups, "admin"], schedule: ["计划与维护", schedule, "read"], guard: ["风扇保护", guard, "read"], notifications: ["告警推送", notifications, "admin"], audit: ["操作审计", audit, "admin"], users: ["账号权限", users, "admin"], keys: ["访问密钥", keys, "admin"], devices: ["多设备", devices, "read"], jobs: ["脚本任务", jobs, "scripts"]};
+  const pages = {health: ["设备健康", health, "read"], history: ["历史监控", history, "read"], disks: ["磁盘趋势", disks, "read"], backups: ["备份与版本", backups, "admin"], schedule: ["计划与维护", schedule, "read"], guard: ["风扇保护", guard, "read"], notifications: ["告警推送", notifications, "admin"], audit: ["操作审计", audit, "admin"], keys: ["访问密钥", keys, "admin"], devices: ["多设备", devices, "read"], jobs: ["脚本任务", jobs, "scripts"]};
   let loading = false;
   async function render() {
     if (loading) return;
@@ -214,10 +208,10 @@
   $("refresh").onclick = () => render();
   $("review-cancel").onclick = () => $("review").close();
   $("review-apply").onclick = async () => { $("review-apply").disabled = true; try { await api("restore", restore); $("review").close(); status("配置已恢复"); await render(); } catch (error) { status(error.message, true); } finally { $("review-apply").disabled = false; } };
-  $("signout").onclick = async () => { try { await api("/api/logout", {}); sessionStorage.removeItem("s2-session"); location.replace("/login"); } catch (error) { status(error.message, true); } };
+  $("signout").onclick = async () => { try { await api("/api/logout", {}); window.S2Auth.clear(); location.replace("/login"); } catch (error) { status(error.message, true); } };
   (async () => {
     try {
-      principal = await api("me"); $("identity").textContent = principal.name + " · " + ({admin: "管理员", operator: "操作员", viewer: "只读"}[principal.role] || "访问密钥");
+      principal = await api("me"); $("identity").textContent = ({owner: "访问口令已验证", local: "设备本机访问", guest: "只读访问"}[principal.kind] || "访问密钥");
       for (const [key, [label, , scope]] of Object.entries(pages)) if (allowed(scope)) { const btn = button(label, async () => { if (loading) return; current = key; status(""); location.hash = key; await render(); }); btn.dataset.page = key; $("navigation").append(btn); }
       const hash = location.hash.slice(1); if (pages[hash] && allowed(pages[hash][2])) current = hash;
       await render();

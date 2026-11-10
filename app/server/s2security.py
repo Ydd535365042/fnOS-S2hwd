@@ -1,5 +1,7 @@
 """Small, shared security primitives; Python standard library only."""
 import hashlib
+import json
+import math
 import os
 import secrets
 import stat
@@ -9,11 +11,51 @@ import time
 
 
 class Sessions:
-    def __init__(self, ttl=12 * 3600, limit=128):
+    def __init__(self, ttl=None, limit=128, path=None, binding=""):
         self.ttl, self.limit = ttl, limit
+        self.path = path
+        self.binding = self.digest(binding)
         self.entries = {}
         self.subjects = {}
         self.lock = threading.Lock()
+        if path:
+            self._load()
+
+    def _load(self):
+        try:
+            if not stat.S_ISREG(os.lstat(self.path).st_mode):
+                raise ValueError("session storage must be a regular file")
+            with open(self.path, encoding="utf-8") as stream:
+                data = json.loads(stream.read(2 * 1024 * 1024))
+            if not isinstance(data, dict) or data.get("version") != 1:
+                return
+            if data.get("binding") != self.binding:
+                self._save()  # Changing the access passphrase invalidates old sessions permanently.
+                return
+            entries = data.get("entries", {})
+            if not isinstance(entries, dict):
+                return
+            for digest, entry in list(entries.items())[-self.limit:]:
+                if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                expires, subject = entry.get("expires"), entry.get("subject")
+                if expires is not None and (type(expires) not in (int, float) or not math.isfinite(expires) or expires <= time.time()):
+                    continue
+                if subject is not None and not isinstance(subject, dict):
+                    continue
+                self.entries[digest], self.subjects[digest] = expires, subject
+        except FileNotFoundError:
+            pass
+        except (json.JSONDecodeError, UnicodeError):
+            pass  # Corrupt data never grants a session.
+
+    def _save(self):
+        if self.path:
+            data = {"version": 1, "binding": self.binding, "entries": {
+                key: {"expires": expires, "subject": self.subjects.get(key)} for key, expires in self.entries.items()}}
+            atomic_text(self.path, json.dumps(data, ensure_ascii=False), mode=0o600)
 
     @staticmethod
     def digest(token):
@@ -21,15 +63,21 @@ class Sessions:
 
     def issue(self, subject=None):
         token = secrets.token_urlsafe(32)
-        now = time.monotonic()
+        now = time.time()
         with self.lock:
-            self.entries = {k: v for k, v in self.entries.items() if v > now}
+            previous = self.entries.copy(), self.subjects.copy()
+            self.entries = {k: v for k, v in self.entries.items() if v is None or v > now}
             if len(self.entries) >= self.limit:
-                del self.entries[min(self.entries, key=self.entries.get)]
+                del self.entries[next(iter(self.entries))]
             self.subjects = {k: v for k, v in self.subjects.items() if k in self.entries}
             digest = self.digest(token)
-            self.entries[digest] = now + self.ttl
+            self.entries[digest] = None if self.ttl is None else now + self.ttl
             self.subjects[digest] = subject
+            try:
+                self._save()
+            except (OSError, ValueError):
+                self.entries, self.subjects = previous
+                raise
         return token
 
     def subject(self, token):
@@ -40,12 +88,22 @@ class Sessions:
         if not token or len(token) > 128:
             return False
         with self.lock:
-            return self.entries.get(self.digest(token), 0) > time.monotonic()
+            digest = self.digest(token)
+            return digest in self.entries and (self.entries[digest] is None or self.entries[digest] > time.time())
 
     def revoke(self, token):
         with self.lock:
-            self.entries.pop(self.digest(token), None)
-            self.subjects.pop(self.digest(token), None)
+            digest = self.digest(token)
+            if digest not in self.entries:
+                return
+            previous = self.entries.copy(), self.subjects.copy()
+            self.entries.pop(digest, None)
+            self.subjects.pop(digest, None)
+            try:
+                self._save()
+            except (OSError, ValueError):
+                self.entries, self.subjects = previous
+                raise
 
 
 def atomic_text(path, text, mode=None):

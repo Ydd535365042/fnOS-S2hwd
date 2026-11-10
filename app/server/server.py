@@ -7,7 +7,7 @@ S2 硬件控制台 —— HTTP 服务（仅用 Python 标准库）
 ----
 GET  /                     静态页面（命中时带 ETag/Last-Modified，304 省流量）；
                            公开静态应用壳，所有设备数据均经 API 鉴权
-POST /login                表单 token / next，返回短期会话（不设置认证 Cookie）
+POST /login                表单 token / next，返回持久会话（不设置认证 Cookie）
 GET  /api/state            综合状态（附 access: {token 是否设置, danger 本次来源能否做高危操作}）
 GET  /api/sensor           轻量传感器快照（10 秒轮询，不起子进程）
 GET  /api/hwinfo?force=    慢变硬件信息（CPU/内存/磁盘/SMART/文件系统/阵列/网卡），
@@ -32,7 +32,7 @@ POST /api/restart          {port} 改端口并自重启
 6) 所有硬件写操作、脚本接口、配置修改和重启统一设门：
    未配置 TOKEN 时只允许本机调用，配置后凭口令调用。
    —— 否则「没设口令」等于把整台设备的 root shell 挂在局域网里。
-7) POST /login 签发 12 小时会话，浏览器按来源保存在 sessionStorage，仅通过请求头发送。
+7) POST /login 签发无固定有效期的会话，浏览器按来源持久保存，仅通过请求头发送。
    同一来源 5 分钟内错 10 次锁 5 分钟，锁住期间正确口令也不认。
 """
 
@@ -60,7 +60,7 @@ import hwctl  # noqa: E402
 import hwinfo  # noqa: E402  （只读本地兜底路径用：非 root 且无 agent 时的 /api/hwinfo）
 import s2security
 import s2ops
-from s2store import Problem, ROLES
+from s2store import Problem, ALL_SCOPES
 import alerts  # noqa: E402  （硬件告警：后台线程定时检查，记录给右上角铃铛）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -114,7 +114,7 @@ FAIL_WINDOW = 300
 AUTH_FAILS = {}            # ip -> [失败时刻, ...]
 AUTH_FAIL_LOCK = threading.Lock()
 COOKIE_NAME = "s2token"  # 仅用于清理旧版本 Cookie，不再接受它认证。
-SESSIONS = s2security.Sessions()
+SESSIONS = s2security.Sessions(path=os.path.join(VAR_DIR, "auth-sessions.json"), binding=TOKEN)
 
 # 未配置口令时，远程来源只能查询硬件；启用口令并重启后可登录写入。
 DANGER_DENY_MSG = (
@@ -692,17 +692,15 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <circle cx="32.5" cy="69" r="3.6" fill="#34e68c"/><circle cx="67.5" cy="69" r="3.6" fill="#34e68c"/></svg></span>
   <span class="name"><b class="org">NIX</b><em>fnOS-S2</em></span><span class="sub">硬件控制台</span></div>
  <h1>输入访问口令</h1>
- <p>登录在当前标签页内有效，最长 12 小时。应用重启后需重新登录。</p>
+ <p>登录后长期记住，无固定有效期；退出登录或修改口令后需重新输入。</p>
  <p class="err" id="login-error" role="alert" hidden></p>
  {{ERR}}
- <label for="username">账号（使用原访问口令时留空）</label>
- <input id="username" name="username" autocomplete="username" maxlength="32">
- <label for="tk">访问口令 / 账号密码</label>
+ <label for="tk">访问口令</label>
  <input id="tk" type="password" name="token" autofocus required maxlength="128"
         autocomplete="current-password" {{DIS}}>
  <input type="hidden" name="next" value="{{NEXT}}">
  <button type="submit" {{DIS}}>进入控制台</button>
-</form><script src="/login.js" defer></script></body></html>"""
+</form><script src="/auth.js" defer></script><script src="/login.js" defer></script></body></html>"""
 
     def log_message(self, fmt, *args):
         """默认实现会打印完整 requestline，?token= 就跟着进日志了。
@@ -988,21 +986,21 @@ button:disabled{opacity:.5;cursor:not-allowed}
             return store.key_principal(token)
         if SESSIONS.valid(token):
             subject = SESSIONS.subject(token)
-            if subject and subject.get("kind") == "user":
-                return store.current_user(subject)
-            return {"name": "owner", "kind": "owner", "role": "admin", "scopes": ROLES["admin"]}
+            if subject is not None:
+                return None  # Legacy account sessions are no longer accepted.
+            return {"name": "owner", "kind": "owner", "scopes": ALL_SCOPES}
         explicit = self.headers.get("X-S2-Token", "")
         if explicit and TOKEN:
             ok = self._tok_eq(explicit)
             self._note_auth(ok)
             if ok:
-                return {"name": "owner", "kind": "owner", "role": "admin", "scopes": ROLES["admin"]}
+                return {"name": "owner", "kind": "owner", "scopes": ALL_SCOPES}
         if token or explicit:
             return None
-        if not TOKEN and not store.users_exist():
+        if not TOKEN:
             local = self._remote() in LOOPBACK
-            return {"name": "local" if local else "guest", "role": "admin" if local else "viewer",
-                    "kind": "local" if local else "guest", "scopes": ROLES["admin"] if local else ["read"]}
+            return {"name": "local" if local else "guest",
+                    "kind": "local" if local else "guest", "scopes": ALL_SCOPES if local else ["read"]}
         return None
 
     def _auth_ok(self):
@@ -1013,7 +1011,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         if principal and scope in principal.get("scopes", []):
             return True
         self.close_connection = True
-        self._json({"ok": False, "msg": "当前账号没有此操作权限"}, 403)
+        self._json({"ok": False, "msg": "当前访问凭据没有此操作权限"}, 403)
         return False
 
     def _danger_ok(self, remote):
@@ -1042,7 +1040,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         return nxt
 
     def _login_page(self, bad=False, locked=False, code=200):
-        """公开登录页；login.js 将短期会话保存在当前来源的 sessionStorage。"""
+        """公开口令登录页；随机会话按来源持久保存。"""
         if locked:
             note = '<p class="err">口令错误次数太多，请 5 分钟后再试。</p>'
         elif bad:
@@ -1077,16 +1075,23 @@ button:disabled{opacity:.5;cursor:not-allowed}
         form = urllib.parse.parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
         username = (form.get("username") or [""])[0]
         password = (form.get("token") or [""])[0]
-        subject = get_ops().store.login(username, password) if username else None
-        owner = bool(not username and TOKEN and self._tok_eq(password))
-        anonymous = not username and not TOKEN and not get_ops().store.users_exist()
-        ok = bool(subject or owner or anonymous)
+        if username:
+            self._json({"ok": False, "msg": "无需账号，请只输入访问口令"}, 400)
+            return
+        owner = bool(TOKEN and self._tok_eq(password))
+        anonymous = not TOKEN
+        ok = owner or anonymous
         self._note_auth(ok)
         if not ok:
-            self._json({"ok": False, "msg": "账号或口令不正确"}, 401)
+            self._json({"ok": False, "msg": "访问口令不正确"}, 401)
             return
-        audit("auth:login", {"actor": username or "owner"}, self._remote(), True)
-        self._json({"ok": True, "session": "" if anonymous else SESSIONS.issue(subject), "next": "/"})
+        try:
+            session = "" if anonymous else SESSIONS.issue()
+        except (OSError, ValueError):
+            self._json({"ok": False, "msg": "无法保存登录状态，请检查应用数据目录"}, 503)
+            return
+        audit("auth:login", {"actor": "owner"}, self._remote(), True)
+        self._json({"ok": True, "session": session, "next": "/"})
 
     def _auth_fail_json(self):
         """API 401：前端清除会话并跳到登录页。"""
@@ -1108,7 +1113,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         # 以前「找不到就回落 index.html 并返回 200」，等于把 public/ 变成一个
         # 任何路径都答 200 的文件服务器：既分不清「真的不存在」和「首页」，
         # 也让 public/ 里任何被顺手扔进去的东西都自动对外可读。
-        if (rel not in ("index.html", "app.js", "style.css", "login.js", "manage.html", "manage.js", "manage.css")
+        if (rel not in ("index.html", "app.js", "style.css", "auth.js", "login.js", "manage.html", "manage.js", "manage.css")
                 or not inside or not os.path.isfile(full)
                 or not full.endswith(self.STATIC_EXT)):
             self.send_error(404)
@@ -1245,7 +1250,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         if path == "/api/state":
             r = hw_call("status", {})
             # 页面据此决定重启 / 改端口这些按钮能不能点、该提示什么
-            r["access"] = {"token": bool(TOKEN or get_ops().store.users_exist()), "danger": self._danger_ok(self._remote()),
+            r["access"] = {"token": bool(TOKEN), "danger": self._danger_ok(self._remote()),
                            "scopes": self._principal().get("scopes", []), "actor": self._principal()["name"]}
             self._json(r)
         elif path == "/api/sensor":
@@ -1378,7 +1383,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self._json({"ok": False, "msg": "请求缺少安全校验头，请刷新页面"}, 403)
             return
         if path == "/api/logout":
-            SESSIONS.revoke(self._session_token())
+            try:
+                SESSIONS.revoke(self._session_token())
+            except (OSError, ValueError):
+                self._json({"ok": False, "msg": "无法保存退出状态，请检查应用数据目录后重试"}, 503)
+                return
             self.close_connection = True
             self._json({"ok": True, "msg": "已退出登录"})
             return

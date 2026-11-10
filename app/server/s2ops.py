@@ -403,8 +403,6 @@ class Operations:
             return self.call("fan_guard_info")
         if route == "notifications":
             return self.notifications()
-        if route == "users":
-            return self.store.users()
         if route == "keys":
             return self.store.keys()
         if route == "devices":
@@ -453,8 +451,6 @@ class Operations:
             self.call("service", {"name": body["service"], "action": "restart"})
         elif route == "notifications":
             return self.save_notifications(body)
-        elif route == "users":
-            self.store.save_user(body)
         elif route == "keys":
             return self.store.create_key(body)
         elif route == "keys/revoke":

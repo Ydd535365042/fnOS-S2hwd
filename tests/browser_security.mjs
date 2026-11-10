@@ -78,8 +78,30 @@ try {
   check(await ev(`document.getElementById('login-error').textContent.includes('口令不正确') && !document.querySelector('form button').disabled`), "wrong password stays on login with a usable retry button");
   await ev(`document.getElementById('tk').value='fixture-password'; document.querySelector('form').requestSubmit()`);
   await until(`location.pathname === '/' && document.getElementById('set-host')?.textContent === 'fixture-host'`, "login complete");
-  const session = await ev(`sessionStorage.getItem('s2-session')`);
+  const session = await ev(`localStorage.getItem('s2-session')`);
   check(session && session !== "fixture-password", "login stores a random session scoped to this origin");
+  check(await ev(`sessionStorage.getItem('s2-session') === null`), "login is not restricted to tab session storage");
+  await control({restart_sessions: true});
+  await cmd("Page.reload");
+  await until(`location.pathname === '/' && document.getElementById('set-host')?.textContent === 'fixture-host'`, "remembered login after backend session reload");
+  check(await ev(`localStorage.getItem('s2-session') === ${JSON.stringify(session)}`), "remembered login survives backend restart and page reload");
+  const newTarget = await cmd("Target.createTarget", {url: base + "/"});
+  const tabTargets = await (await fetch(`http://127.0.0.1:${debug}/json/list`)).json();
+  const tabSocket = new WebSocket(tabTargets.find(t => t.id === newTarget.targetId).webSocketDebuggerUrl);
+  await new Promise(res => tabSocket.addEventListener("open", res, {once:true}));
+  try {
+    let tabReady = false;
+    for (let i=0; i<60 && !tabReady; i++) {
+      tabReady = await new Promise((res, rej) => {
+        const timer = setTimeout(()=>rej(new Error("new tab check timeout")),5000);
+        const listener = event => { const result=JSON.parse(event.data); if(result.id!==1)return; clearTimeout(timer);tabSocket.removeEventListener("message",listener);res(result.result?.result?.value); };
+        tabSocket.addEventListener("message",listener);
+        tabSocket.send(JSON.stringify({id:1,method:"Runtime.evaluate",params:{expression:`location.pathname==='/' && document.getElementById('set-host')?.textContent==='fixture-host' && localStorage.getItem('s2-session')===${JSON.stringify(session)}`,returnByValue:true}}));
+      });
+      if(!tabReady) await sleep(100);
+    }
+    check(tabReady,"a new independent tab reuses the remembered passphrase login");
+  } finally {tabSocket.close();await cmd("Target.closeTarget",{targetId:newTarget.targetId});}
   const cookies = await cmd("Network.getCookies", {urls: [base]});
   check(!cookies.cookies.some(c => c.name === "s2token"), "login creates no password cookie");
   check(await ev(`document.getElementById('ov-sch-gap').textContent === '1小时 0分'`), "schedule countdown uses device UTC+8 while browser uses New York");
@@ -120,7 +142,7 @@ try {
   peer = createServer((req, res) => {
     peerCookies.push(req.headers.cookie || "");
     res.setHeader("Content-Type", "text/html");
-    res.end(`<script>window.peerSession=sessionStorage.getItem('s2-session'); fetch('${base}/api/script/save',{method:'POST',credentials:'include',headers:{'Content-Type':'text/plain'},body:JSON.stringify({name:'cross-origin.sh',content:'echo blocked'})}).catch(()=>{}).finally(()=>window.attackDone=true)</script>`);
+    res.end(`<script>window.peerSession=localStorage.getItem('s2-session'); fetch('${base}/api/script/save',{method:'POST',credentials:'include',headers:{'Content-Type':'text/plain'},body:JSON.stringify({name:'cross-origin.sh',content:'echo blocked'})}).catch(()=>{}).finally(()=>window.attackDone=true)</script>`);
   });
   peer.listen(0, "127.0.0.1"); await once(peer, "listening");
   const beforeJobs = stats.jobs.length;

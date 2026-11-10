@@ -81,7 +81,7 @@ class OperationsTests(unittest.TestCase):
         self.device = Device()
         self.ops = s2ops.Operations(self.temp.name, self.device.call, lambda: self.device.sensor,
                                    lambda: self.device.alerts, clock=lambda: self.device.now, network=self.device.network)
-        self.admin = {"name": "fixture-admin", "role": "admin", "scopes": s2store.ROLES["admin"]}
+        self.admin = {"name": "fixture-admin", "role": "admin", "scopes": s2store.ALL_SCOPES}
         self.ops.post("retention", {"days": 30, "enabled": True}, self.admin)
 
     def tearDown(self):
@@ -187,17 +187,12 @@ class OperationsTests(unittest.TestCase):
         rows = self.ops.get("audit", {"actor": "alice", "action": "fan"}, self.admin)
         self.assertEqual(len(rows), 1); self.assertEqual(rows[0]["ip"], "192.0.2.4")
 
-    def test_users_password_hash_revision_and_last_admin(self):
-        store = self.ops.store
-        self.assertRaises(s2store.Problem, store.save_user, {"name": "viewer", "role": "viewer", "password": "password-test"})
-        store.save_user({"name": "alice", "role": "admin", "password": "password-test"})
-        principal = store.login("alice", "password-test")
-        self.assertEqual(principal["role"], "admin")
-        self.assertIsNone(store.login("alice", "wrong"))
-        self.assertNotIn("password", json.dumps(store.users()))
-        store.save_user({"name": "alice", "role": "admin", "password": "new-password-test"})
-        self.assertIsNone(store.current_user(principal))
-        self.assertRaises(s2store.Problem, store.save_user, {"name": "alice", "role": "viewer", "enabled": False})
+    def test_account_management_is_removed(self):
+        for action in (lambda: self.ops.get("users", {}, self.admin), lambda: self.ops.post("users", {}, self.admin)):
+            with self.assertRaises(s2store.Problem) as error: action()
+            self.assertEqual(error.exception.status, 404)
+        with self.ops.store.db() as db:
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='users'").fetchone())
 
     def test_api_keys_expire_and_revoke_without_storing_token(self):
         store = self.ops.store
@@ -354,41 +349,42 @@ class RouteAuthorizationTests(unittest.TestCase):
         cls.box = Sandbox(); cls.web = cls.box.web
         cls.device = Device()
         cls.web._OPS = s2ops.Operations(str(cls.box.root / "operations"), cls.device.call, lambda: cls.device.sensor, lambda: cls.device.alerts)
-        store = cls.web.get_ops().store
-        for name, role in (("admin-user", "admin"), ("reader-user", "viewer"), ("operator-user", "operator")):
-            store.save_user({"name": name, "role": role, "password": "fixture-password"})
         cls.context = serving(cls.box.handler); cls.server = cls.context.__enter__()
 
     @classmethod
     def tearDownClass(cls):
         cls.context.__exit__(None, None, None); cls.box.close()
 
-    def login(self, name):
-        status, _, data = request(self.server, "/login", "username=" + name + "&token=fixture-password", {"Content-Type": "application/x-www-form-urlencoded"})
-        self.assertEqual(status, 200)
-        return {"Authorization": "Bearer " + data["session"], "X-S2-Request": "1", "Content-Type": "application/json"}
+    def headers(self, scopes=None):
+        if scopes is not None:
+            token = self.web.get_ops().store.create_key({"label": "test-client", "scopes": scopes})["token"]
+        else:
+            status, _, data = request(self.server, "/login", "token=fixture-password", {"Content-Type": "application/x-www-form-urlencoded"})
+            self.assertEqual(status, 200)
+            token = data["session"]
+        return {"Authorization": "Bearer " + token, "X-S2-Request": "1", "Content-Type": "application/json"}
 
-    def test_viewer_cannot_reach_write_admin_or_scripts_routes(self):
-        headers = self.login("reader-user")
+    def test_read_key_cannot_reach_write_admin_or_scripts_routes(self):
+        headers = self.headers(["read"])
         self.assertEqual(request(self.server, "/api/ops/report", headers=headers, method="GET")[0], 200)
         for path, body in (("/api/hw", {"op": "set_fan"}), ("/api/ops/keys", {"label": "escalation"}), ("/api/script/start", {"name": "x.sh"}), ("/api/v1/ops/maintenance", {"minutes": 10})):
             with self.subTest(path=path): self.assertEqual(request(self.server, path, body, headers)[0], 403)
         self.assertEqual(request(self.server, "/api/ops/users", headers=headers, method="GET")[0], 403)
 
-    def test_operator_controls_but_cannot_restore_or_create_accounts(self):
-        headers = self.login("operator-user")
+    def test_control_key_cannot_restore_or_manage_settings(self):
+        headers = self.headers(["read", "control"])
         self.assertEqual(request(self.server, "/api/ops/maintenance", {"minutes": 10}, headers)[0], 200)
         for path in ("/api/ops/restore", "/api/ops/users", "/api/ops/devices", "/api/script/save"):
             self.assertEqual(request(self.server, path, {}, headers)[0], 403)
 
     def test_keep_alive_requests_do_not_reuse_previous_identity(self):
         import http.client
-        admin, reader = self.login("admin-user"), self.login("reader-user")
+        admin, reader = self.headers(), self.headers(["read"])
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
         try:
-            connection.request("GET", "/api/ops/users", headers=admin)
+            connection.request("GET", "/api/ops/keys", headers=admin)
             response = connection.getresponse(); self.assertEqual(response.status, 200); response.read()
-            connection.request("GET", "/api/ops/users", headers=reader)
+            connection.request("GET", "/api/ops/keys", headers=reader)
             response = connection.getresponse(); self.assertEqual(response.status, 403); response.read()
         finally:
             connection.close()
@@ -400,11 +396,14 @@ class RouteAuthorizationTests(unittest.TestCase):
         self.assertEqual(request(self.server, "/api/ops/users", headers=headers, method="GET")[0], 403)
         self.assertEqual(request(self.server, "/api/state", headers=headers, method="GET")[0], 403)
 
-    def test_account_update_revokes_old_session(self):
-        headers = self.login("reader-user")
-        self.web.get_ops().store.save_user({"name": "reader-user", "role": "viewer", "enabled": False})
-        self.assertEqual(request(self.server, "/api/state", headers=headers, method="GET")[0], 401)
-        self.web.get_ops().store.save_user({"name": "reader-user", "role": "viewer", "enabled": True})
+    def test_legacy_account_login_and_sessions_are_rejected(self):
+        status = request(self.server, "/login", "username=old-user&token=fixture-password", {"Content-Type": "application/x-www-form-urlencoded"})[0]
+        self.assertEqual(status, 400)
+        token = self.web.SESSIONS.issue({"kind": "user", "name": "old-user", "role": "admin"})
+        self.assertEqual(request(self.server, "/api/state", headers={"Authorization": "Bearer " + token}, method="GET")[0], 401)
+        owner = self.headers()
+        self.assertEqual(request(self.server, "/api/ops/users", headers=owner, method="GET")[0], 404)
+        self.assertEqual(request(self.server, "/api/ops/users", {}, owner)[0], 404)
 
     def test_api_key_read_scope_and_admin_endpoint_rejection(self):
         issued = self.web.get_ops().store.create_key({"label": "monitor", "scopes": ["read"]})
@@ -413,7 +412,7 @@ class RouteAuthorizationTests(unittest.TestCase):
         self.assertEqual(request(self.server, "/api/ops/keys", {}, headers)[0], 403)
 
     def test_script_changed_digest_and_duplicate_rejected(self):
-        headers = self.login("admin-user")
+        headers = self.headers()
         request(self.server, "/api/script/save", {"name": "review.sh", "content": "echo old\n"}, headers)
         inspected = request(self.server, "/api/script/inspect?name=review.sh", headers=headers, method="GET")[2]["data"]
         request(self.server, "/api/script/save", {"name": "review.sh", "content": "echo changed\n"}, headers)

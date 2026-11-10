@@ -85,6 +85,8 @@ class Handler(box.handler):
                 return
             if "password" in body:
                 box.web.TOKEN = "fixture-password" if body["password"] else ""
+            if body.get("restart_sessions"):
+                box.web.SESSIONS = box.web.s2security.Sessions(path=str(box.root / "var/auth-sessions.json"), binding=box.web.TOKEN)
             if "fail_schedule" in body:
                 box.fail_schedule = body["fail_schedule"]
             if "schedule" in body:

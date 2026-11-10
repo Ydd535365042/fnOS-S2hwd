@@ -148,6 +148,7 @@ ta = tarfile.open(fileobj=io.BytesIO(a2), mode="r:gz")
 an = set(ta.getnames())
 for need in ("server/server.py", "server/hwctl.py", "server/hwinfo.py", "server/alerts.py", "server/public/app.js",
              "server/s2security.py", "server/public/login.js", "agent/install-hw-agent.sh",
+             "server/public/auth.js",
              "server/s2store.py", "server/s2ops.py", "server/s2hardware.py", "server/job_runner.py",
              "server/public/manage.html", "server/public/manage.js", "server/public/manage.css", "firmware/s2_schedule.py",
              "firmware/s2_disk.py",

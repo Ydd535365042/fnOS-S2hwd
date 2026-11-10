@@ -202,7 +202,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_expiration_eviction_and_hashed_storage(self):
         sessions = self.web.s2security.Sessions(ttl=5, limit=2)
-        with mock.patch.object(self.web.s2security.time, "monotonic", return_value=100):
+        with mock.patch.object(self.web.s2security.time, "time", return_value=100):
             first = sessions.issue()
             self.assertTrue(sessions.valid(first))
             self.assertNotIn(first, sessions.entries)
@@ -210,8 +210,46 @@ class SecurityTests(unittest.TestCase):
             last = sessions.issue()
             self.assertEqual(len(sessions.entries), 2)
             self.assertFalse(sessions.valid(first))
-        with mock.patch.object(self.web.s2security.time, "monotonic", return_value=106):
+        with mock.patch.object(self.web.s2security.time, "time", return_value=106):
             self.assertFalse(sessions.valid(last))
+
+    def test_persistent_session_has_no_time_limit_and_survives_restart(self):
+        path = str(self.box.root / "persistent-session.json")
+        session_type = self.web.s2security.Sessions
+        sessions = session_type(path=path, binding="fixture-passphrase")
+        token = sessions.issue()
+        saved = Path(path).read_bytes()
+        self.assertNotIn(token.encode(), saved)
+        self.assertNotIn(b"fixture-passphrase", saved)
+        with mock.patch.object(self.web.s2security.time, "time", return_value=9999999999):
+            restarted = session_type(path=path, binding="fixture-passphrase")
+            self.assertTrue(restarted.valid(token))
+            for _ in range(10): self.assertTrue(restarted.valid(token))
+        self.assertEqual(saved, Path(path).read_bytes(), "Validation must not cause periodic disk writes")
+        restarted.revoke(token)
+        self.assertFalse(session_type(path=path, binding="fixture-passphrase").valid(token))
+
+    def test_changing_passphrase_permanently_invalidates_remembered_sessions(self):
+        path = str(self.box.root / "rotated-session.json")
+        session_type = self.web.s2security.Sessions
+        original = session_type(path=path, binding="first-passphrase")
+        token = original.issue()
+        self.assertFalse(session_type(path=path, binding="second-passphrase").valid(token))
+        self.assertFalse(session_type(path=path, binding="first-passphrase").valid(token))
+
+    def test_failed_logout_persistence_does_not_claim_revocation(self):
+        path = str(self.box.root / "logout-session.json")
+        sessions = self.web.s2security.Sessions(path=path, binding="fixture")
+        token = sessions.issue()
+        with mock.patch.object(self.web.s2security, "atomic_text", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError): sessions.revoke(token)
+        self.assertTrue(sessions.valid(token))
+
+    def test_login_page_has_no_username_field(self):
+        status, _, body = request(self.server, "/login", method="GET")
+        self.assertEqual(status, 200)
+        self.assertNotIn(b'name="username"', body)
+        self.assertIn(b'name="token"', body)
 
     def test_settings_atomic_write_preserves_content_and_rejects_symlink(self):
         settings = self.box.root / "settings.conf"

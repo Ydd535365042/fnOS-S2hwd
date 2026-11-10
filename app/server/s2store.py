@@ -1,17 +1,14 @@
-"""Private SQLite storage and account authorization for the operations console."""
+"""Private SQLite storage and scoped API keys for the operations console."""
 import contextlib
 import hashlib
-import hmac
 import json
 import os
-import re
 import secrets
 import sqlite3
 import threading
 import time
 
-ROLES = {"viewer": ["read"], "operator": ["read", "control"],
-         "admin": ["read", "control", "scripts", "admin"]}
+ALL_SCOPES = ["read", "control", "scripts", "admin"]
 
 
 class Problem(ValueError):
@@ -44,8 +41,6 @@ class Store:
         with self.db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS users(name TEXT PRIMARY KEY, salt TEXT, password TEXT,
-                    role TEXT, enabled INTEGER, revision INTEGER);
                 CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY, label TEXT, hash TEXT UNIQUE,
                     scopes TEXT, expires REAL, created REAL, last_used REAL, revoked INTEGER DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, ts REAL, actor TEXT, ip TEXT,
@@ -89,63 +84,9 @@ class Store:
                        (time.time(), actor, ip, action, int(bool(ok)), json.dumps(detail or {}, ensure_ascii=False)))
             db.execute("DELETE FROM events WHERE id <= (SELECT max(id)-10000 FROM events)")
 
-    def users_exist(self):
-        with self.db() as db:
-            return bool(db.execute("SELECT 1 FROM users WHERE enabled=1 LIMIT 1").fetchone())
-
-    def users(self):
-        with self.db() as db:
-            return [dict(r) for r in db.execute("SELECT name,role,enabled,revision FROM users ORDER BY name")]
-
-    @staticmethod
-    def password_hash(password, salt):
-        return hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 600000).hex()
-
-    def save_user(self, body):
-        name, role = body.get("name", ""), body.get("role", "viewer")
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", name) or name == "owner":
-            raise Problem("账号需为 2–32 位字母、数字、点、短横线或下划线；owner 为保留名称")
-        if role not in ROLES or not isinstance(body.get("enabled", True), bool):
-            raise Problem("账号角色或启用状态无效")
-        password = body.get("password", "")
-        if not isinstance(password, str) or (password and not 12 <= len(password) <= 128):
-            raise Problem("新密码需要 12–128 位")
-        with self.db() as db:
-            old = db.execute("SELECT * FROM users WHERE name=?", (name,)).fetchone()
-            if not db.execute("SELECT 1 FROM users WHERE role='admin' AND enabled=1").fetchone() and (role != "admin" or not body.get("enabled", True)):
-                raise Problem("请先创建一个启用的管理员账号")
-            if not old and not password:
-                raise Problem("新增账号必须设置密码")
-            if old and old["role"] == "admin" and old["enabled"] and (role != "admin" or not body.get("enabled", True)):
-                count = db.execute("SELECT count(*) FROM users WHERE role='admin' AND enabled=1").fetchone()[0]
-                if count <= 1:
-                    raise Problem("请保留至少一个启用的管理员账号")
-            salt = secrets.token_hex(16) if password else old["salt"]
-            digest = self.password_hash(password, salt) if password else old["password"]
-            db.execute("INSERT OR REPLACE INTO users VALUES (?,?,?,?,?,?)", (
-                name, salt, digest, role, int(body.get("enabled", True)), old["revision"] + 1 if old else 1))
-
-    def login(self, name, password):
-        if not isinstance(password, str) or len(password) > 128:
-            return None
-        with self.db() as db:
-            row = db.execute("SELECT * FROM users WHERE name=?", (name,)).fetchone()
-        salt = row["salt"] if row else "00" * 16
-        candidate = self.password_hash(password, salt)
-        if row and row["enabled"] and hmac.compare_digest(candidate, row["password"]):
-            return {"name": name, "role": row["role"], "revision": row["revision"], "kind": "user"}
-        return None
-
-    def current_user(self, subject):
-        with self.db() as db:
-            row = db.execute("SELECT role,revision,enabled FROM users WHERE name=?", (subject.get("name"),)).fetchone()
-        if row and row["enabled"] and row["revision"] == subject.get("revision"):
-            return dict(subject, role=row["role"], scopes=ROLES[row["role"]])
-        return None
-
     def create_key(self, body):
         scopes = body.get("scopes", ["read"])
-        if not isinstance(scopes, list) or not scopes or any(s not in ROLES["admin"] for s in scopes):
+        if not isinstance(scopes, list) or not scopes or any(s not in ALL_SCOPES for s in scopes):
             raise Problem("密钥权限无效")
         label = str(body.get("label", ""))[:80].strip()
         if not label:

@@ -21,8 +21,7 @@
         throw new Error(data && typeof data.msg === "string" ? data.msg : "登录失败，请重试");
       }
       try {
-        sessionStorage.removeItem("s2-session");
-        if (data.session) sessionStorage.setItem("s2-session", data.session);
+        window.S2Auth.set(data.session);
       } catch (_) {
         throw new Error("无法保存登录状态，请允许本站使用浏览器存储后重试");
       }

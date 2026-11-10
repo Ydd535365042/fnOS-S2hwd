@@ -31,10 +31,9 @@
     };
   })();
 
-  /* 会话按来源保存在当前标签页，只通过显式请求头发送。 */
-  let SESSION = "";
-  try { SESSION = sessionStorage.getItem("s2-session") || ""; } catch (_) {}
-  const authHeaders = () => SESSION ? { Authorization: "Bearer " + SESSION } : {};
+  /* 按来源持久保存随机会话，只通过显式请求头发送。 */
+  let SESSION = window.S2Auth.get();
+  const authHeaders = () => { SESSION = window.S2Auth.get(); return SESSION ? { Authorization: "Bearer " + SESSION } : {}; };
   async function fetchAPI(path, options = {}, timeout = 20000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
@@ -81,13 +80,13 @@
     return "无法连接设备";
   }
 
-  /* 401 = 会话过期或服务重启。只发起一次登录跳转，避免并发请求重复导航。 */
+  /* 401 = 会话已撤销或口令已变更。只发起一次登录跳转。 */
   let loginRedirecting = false;
   function authExpired() {
     if (loginRedirecting) return;
     loginRedirecting = true;
     SESSION = "";
-    try { sessionStorage.removeItem("s2-session"); } catch (_) {}
+    window.S2Auth.clear();
     location.replace("/login");
   }
 
