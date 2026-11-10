@@ -52,19 +52,9 @@ read_conf() {
   done < "$CONF"
 }
 
-# $1=HH:MM -> 今天或明天该时刻的 epoch；若已过期则用明天
+# 按星期、跳过日期和维护期限计算下一次开机时间。
 next_epoch() {
-  local h m now today target
-  IFS=':' read -r h m <<< "$1"
-  now=$(date +%s)
-  today=$(date -d "today ${h}:${m}" +%s 2>/dev/null)
-  [ -z "$today" ] && return 1
-  if [ "$today" -le "$now" ]; then
-    target=$(date -d "tomorrow ${h}:${m}" +%s 2>/dev/null)
-  else
-    target=$today
-  fi
-  echo "$target"
+  python3 /usr/local/sbin/s2_schedule.py next boot
 }
 
 arm_rtc() {
@@ -100,17 +90,18 @@ clear_rtc() {
 
 apply() {
   read_conf
+  local rc=0
   if [ "$ENABLED" != "1" ]; then
     echo "定时开关机未启用，清理已设规则"
     systemctl disable --now "$SHUTDOWN_SVC"      >/dev/null 2>&1 || true
-    systemctl disable --now s2-power-shutdown.timer >/dev/null 2>&1 || true
+    systemctl disable --now s2-power-shutdown.timer >/dev/null 2>&1 || rc=1
     clear_rtc
-    return 0
+    return "$rc"
   fi
 
   # ---- 定时关机 ----
   if [ -n "$SHUTDOWN_TIME" ]; then
-    cat > "$SHUTDOWN_TIMER" <<EOF
+    if ! cat > "$SHUTDOWN_TIMER" <<EOF
 [Unit]
 Description=S2 定时关机定时器
 [Timer]
@@ -119,24 +110,41 @@ Persistent=false
 [Install]
 WantedBy=timers.target
 EOF
-    systemctl daemon-reload >/dev/null 2>&1
-    systemctl enable --now s2-power-shutdown.timer >/dev/null 2>&1 \
-      && echo "已启用定时关机: 每日 ${SHUTDOWN_TIME}" \
-      || echo "定时关机启用失败"
+    then
+      echo "无法写入定时关机规则"
+      return 1
+    fi
+    if systemctl daemon-reload >/dev/null 2>&1 && \
+       systemctl enable --now s2-power-shutdown.timer >/dev/null 2>&1; then
+      echo "已启用定时关机: ${SHUTDOWN_TIME}，执行前检查星期和维护状态"
+    else
+      echo "定时关机启用失败"
+      rc=1
+    fi
   else
-    systemctl disable --now s2-power-shutdown.timer >/dev/null 2>&1 || true
+    systemctl disable --now s2-power-shutdown.timer >/dev/null 2>&1 || rc=1
     echo "未设置关机时间，定时关机关闭"
   fi
 
   # ---- 定时开机 ----
   if [ -n "$BOOT_TIME" ]; then
     local t
-    t=$(next_epoch "$BOOT_TIME") && arm_rtc "$t" \
-      || echo "未设置有效的开机时间，定时开机关闭"
+    if t=$(next_epoch "$BOOT_TIME"); then
+      if [ -n "$(find_rtc)" ]; then
+        arm_rtc "$t" || rc=1
+      else
+        echo "未找到 RTC wakealarm 接口，定时开机不可用"
+      fi
+    else
+      clear_rtc
+      echo "无法计算下次开机时间，已清除旧闹钟"
+      rc=1
+    fi
   else
     clear_rtc
     echo "未设置开机时间，定时开机关闭"
   fi
+  return "$rc"
 }
 
 # 只重设 RTC 闹钟，不碰 timer —— 关机前调用，见文件头的说明。
@@ -165,4 +173,4 @@ case "${1:-apply}" in
   status)   read_conf; echo "ENABLED=$ENABLED SHUTDOWN_TIME=$SHUTDOWN_TIME BOOT_TIME=$BOOT_TIME RTC=$(find_rtc)" ;;
   *) echo "usage: $0 [apply|arm-next|status]"; exit 1 ;;
 esac
-exit 0
+exit $?

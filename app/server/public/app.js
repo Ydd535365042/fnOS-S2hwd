@@ -31,10 +31,29 @@
     };
   })();
 
-  /* ---------- 后端接口 ----------
-     页面和数据同源，Cookie 就是凭据；只有「刚用 ?token= 打开、Cookie 还没绑上」
-     那一次需要显式带头。两种情况都覆盖，别指望哪一条永远成立。 */
-  const TOKEN = new URLSearchParams(location.search).get("token") || "";
+  /* 会话按来源保存在当前标签页，只通过显式请求头发送。 */
+  let SESSION = "";
+  try { SESSION = sessionStorage.getItem("s2-session") || ""; } catch (_) {}
+  const authHeaders = () => SESSION ? { Authorization: "Bearer " + SESSION } : {};
+  async function fetchAPI(path, options = {}, timeout = 20000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(path, { ...options, cache: "no-store", credentials: "omit", signal: controller.signal });
+      let data;
+      try { data = await response.json(); }
+      catch (e) {
+        if (e.name === "AbortError") throw e;
+        throw new Error("设备返回的数据无法识别");
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.ok !== "boolean") {
+        throw new Error("设备返回的数据无法识别");
+      }
+      return { response, data };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   /* 评审用 ?demo=empty：看脚本库 / 模块 / 服务三处空态。
      必须在 applyState() 里也认这个标记：初始化清空之后紧跟着就是第一次
@@ -62,77 +81,52 @@
     return "无法连接设备";
   }
 
-  /* 401 = 口令改过 / cookie 过期。刷新一次页面，服务端会给出登录页。
-     15 秒内只刷一次：万一服务端和页面对不上，别陷入无限刷新。 */
+  /* 401 = 会话过期或服务重启。只发起一次登录跳转，避免并发请求重复导航。 */
+  let loginRedirecting = false;
   function authExpired() {
-    let last = 0;
-    try { last = Number(sessionStorage.getItem("s2-auth-reload")) || 0; } catch (e) {}
-    if (Date.now() - last < 15000) return;
-    try { sessionStorage.setItem("s2-auth-reload", String(Date.now())); } catch (e) {}
-    location.reload();
+    if (loginRedirecting) return;
+    loginRedirecting = true;
+    SESSION = "";
+    try { sessionStorage.removeItem("s2-session"); } catch (_) {}
+    location.replace("/login");
   }
 
   async function apiGet(path) {
-    let r;
-    try {
-      r = await fetch(path, {
-        cache: "no-store",
-        headers: TOKEN ? { "X-S2-Token": TOKEN } : {},
-      });
-    } catch (e) {
-      console.error("[S2] 网络请求失败:", path, e);
-      throw new Error(netErrText(e));
-    }
-    if (!r.ok) {
-      console.error("[S2] 接口返回失败:", path, "HTTP", r.status);
-      if (r.status === 401) authExpired();
-      throw new Error(httpErrText(r.status));
-    }
-    try {
-      return await r.json();
-    } catch (e) {
-      console.error("[S2] 响应不是 JSON:", path, e);
-      throw new Error("设备返回的数据无法识别");
-    }
-  }
-
-  /* 写操作永远返回一个对象，绝不抛异常。
-     页面里 10 个按钮都是 `await hw(...)` 之后紧接着 `btn.disabled = false`，
-     一旦 fetch 因为断网/服务重启而 reject，那句恢复就永远执行不到 ——
-     按钮从此卡在「处理中…」且不可点，只能刷新页面。
-     把失败变成 {ok:false, msg} 之后，所有调用点不必各写一遍 try/catch。
-     后端 msg 里混着原始英文（systemctl / Python 异常）的情况交给后端自己管：这里
-     只保证「fetch 本身失败」「HTTP 非 2xx」这两类纯前端错误给的是中文句子。 */
-  async function apiPost(path, obj, raw) {
-    const opt = { method: "POST", cache: "no-store", headers: {} };
-    if (TOKEN) opt.headers["X-S2-Token"] = TOKEN;
-    if (raw !== undefined) {
-      opt.headers["Content-Type"] = "application/octet-stream";
-      opt.body = raw;
-    } else {
-      opt.headers["Content-Type"] = "application/json";
-      opt.body = JSON.stringify(obj || {});
-    }
-    let r;
-    try {
-      r = await fetch(path, opt);
-    } catch (e) {
-      console.error("[S2] 网络请求失败:", path, e);
-      return { ok: false, msg: netErrText(e) };
-    }
-    const data = await r.json().catch((e) => {
-      console.error("[S2] 响应不是 JSON:", path, e);
-      return { ok: false, msg: "设备返回的数据无法识别" };
-    });
-    if (r.status === 401) authExpired();
-    if (!r.ok && data.msg === undefined) data.msg = httpErrText(r.status);
-    // detail 是后端塞的原始英文诊断（异常栈、systemctl 输出），只进控制台，绝不拼进 toast
-    if (data.detail) console.error("[S2] 接口 detail:", path, data.detail);
+    let result;
+    try { result = await fetchAPI(path, { headers: authHeaders() }); }
+    catch (e) { throw new Error(e.message === "设备返回的数据无法识别" ? e.message : netErrText(e)); }
+    const { response, data } = result;
+    if (response.status === 401) authExpired();
+    if (!response.ok) throw new Error(httpErrText(response.status));
     return data;
   }
 
+  // 写请求不自动重试，避免超时后重复执行硬件操作或脚本。
+  async function apiPost(path, obj, raw) {
+    const opt = { method: "POST", headers: { ...authHeaders(), "X-S2-Request": "1" } };
+    opt.headers["Content-Type"] = raw !== undefined ? "application/octet-stream" : "application/json";
+    opt.body = raw !== undefined ? raw : JSON.stringify(obj || {});
+    try {
+      const { response, data } = await fetchAPI(path, opt, 60000);
+      if (response.status === 401) authExpired();
+      if (!response.ok) {
+        data.ok = false;
+        if (typeof data.msg !== "string") data.msg = httpErrText(response.status);
+      }
+      if (data.detail) console.error("[S2] 接口 detail:", path, data.detail);
+      return data;
+    } catch (e) {
+      return { ok: false, msg: e.message === "设备返回的数据无法识别" ? e.message : netErrText(e) };
+    }
+  }
+
   /* 硬件操作统一走 /api/hw。返回 {ok, msg, data}，失败时 msg 就是给人看的那句话。 */
-  const hw = (op, params) => apiPost("/api/hw", { op: op, params: params || {} });
+  const hw = (op, params) => {
+    if (S2.access && S2.access.danger === false && !["status", "hwinfo", "logs"].includes(op)) {
+      return Promise.resolve({ ok: false, msg: "请先在飞牛「应用设置 → 配置」设置访问口令" });
+    }
+    return apiPost("/api/hw", { op: op, params: params || {} });
+  };
 
   /* 全局状态。state 是 /api/state 的完整快照（含配置、脚本、模块），
      sensor 是 /api/sensor 的实时快照，hwinfo 是 /api/hwinfo 的慢变静态信息
@@ -2139,7 +2133,7 @@
      撤掉那页之后，启停、两个时间、倒计时全在这张迷你卡里 —— 它本来就能做这三件事，
      完整卡片只是同一件事的第二份界面，而两份界面迟早会不一致。
      状态只存一份 SCH，DOM 只是它的投影。 */
-  const SCH = { on: true, off: "03:00", boot: "08:00" };
+  const SCH = { on: true, off: "03:00", boot: "08:00", extended: false, next: null, maintenance: 0 };
 
   function minutes(t) {
     const [h, m] = (t || "00:00").split(":").map(Number);
@@ -2147,8 +2141,10 @@
   }
   // 「今天/明天 + 还有多久」——下次触发永远在将来，过点就顺延到明天
   function nextRun(hhmm) {
-    const now = new Date();
-    const nowMin = now.getHours() * 60 + now.getMinutes();
+    const deviceClock = clockSkew !== null && clockTz !== null;
+    const now = new Date(Date.now() + (deviceClock ? clockSkew + clockTz * 1000 : 0));
+    const nowMin = deviceClock ? now.getUTCHours() * 60 + now.getUTCMinutes()
+      : now.getHours() * 60 + now.getMinutes();
     const target = minutes(hhmm);
     const today = target > nowMin;
     return {
@@ -2167,34 +2163,47 @@
 
   function renderSchedule() {
     ovSchOn.checked = SCH.on;
-    ovSchOff.textContent = SCH.off;
-    ovSchBoot.textContent = SCH.boot;
+    ovSchOff.textContent = SCH.off || "未设置";
+    ovSchBoot.textContent = SCH.boot || "未设置";
     // 时间是可点的，无障碍名必须带上「点了能改」和当前值，否则读屏只会念出一个时间
-    ovSchOff.setAttribute("aria-label", "修改每日关机时间，当前 " + SCH.off);
-    ovSchBoot.setAttribute("aria-label", "修改每日开机时间，当前 " + SCH.boot);
+    ovSchOff.setAttribute("aria-label", "修改计划关机时间，当前 " + SCH.off);
+    ovSchBoot.setAttribute("aria-label", "修改计划开机时间，当前 " + SCH.boot);
     document.getElementById("ov-sch-gap").textContent =
-      SCH.on ? humanGap(nextRun(SCH.off).mins) : "已停用";
+      !SCH.on ? "已停用" : SCH.maintenance > (Date.now() + (clockSkew || 0)) / 1000 ? "维护中"
+      : SCH.extended ? (SCH.next ? humanGap(Math.max(0, Math.ceil((SCH.next * 1000 - Date.now() - (clockSkew || 0)) / 60000))) : "未安排")
+      : SCH.off ? humanGap(nextRun(SCH.off).mins) : "未设置关机时间";
     document.getElementById("ov-sch-card").classList.toggle("is-off", !SCH.on);
   }
 
   /* 用户刚改过、请求还没回来 —— 这期间不许轮询把旧值写回去。
      没有这个闸门时，改完时间等 10 秒就自己弹回原值，用户会以为输入框坏了。 */
   let schDirty = false;
+  let schSaving = false;
+
+  function syncScheduleControls() {
+    [ovSchOn, ovSchOff, ovSchBoot].forEach((button) => {
+      button.disabled = schSaving || !!(S2.access && S2.access.danger === false);
+    });
+  }
 
   /* 把 SCH 整份写到后端。失败时由调用方回滚 —— 界面停在后端并不认的值，
      比不让改更糟：下一条命令会按界面上的值去执行，而设备上根本不是这个值。 */
   async function saveSchedule(okMsg, onFail) {
+    if (schSaving) { if (onFail) onFail(); return; }
+    schSaving = schDirty = true;
+    syncScheduleControls();
     const res = await hw("set_power_schedule", {
       enabled: SCH.on,
       shutdown_time: SCH.off,
       boot_time: SCH.boot,
     });
+    schSaving = schDirty = false;
+    syncScheduleControls();
     if (!res.ok) {
       if (onFail) onFail();
       toast(res.msg || "保存失败", "err");
       return;
     }
-    schDirty = false;
     toast(okMsg || res.msg || "已保存");
     refreshState();
   }
@@ -2217,13 +2226,13 @@
      点数字换成原生 time 输入，改完写回 SCH 再统一 renderSchedule()。
      不另存一份状态：卡片上的文字和 SCH 必须始终是同一个值。 */
   function editTime(kind, btn) {
-    if (btn.dataset.editing === "1") return;
+    if (btn.disabled || btn.dataset.editing === "1") return;
     const wrap = btn.parentElement;
 
     const input = document.createElement("input");
     input.type = "time";
     input.value = SCH[kind];
-    input.setAttribute("aria-label", kind === "off" ? "每日关机时间" : "每日开机时间");
+    input.setAttribute("aria-label", kind === "off" ? "计划关机时间" : "计划开机时间");
 
     btn.dataset.editing = "1";
     btn.hidden = true;
@@ -2257,7 +2266,7 @@
       SCH[kind] = v;
       schDirty = true;
       renderSchedule();
-      saveSchedule((kind === "off" ? "每日关机" : "每日开机") + "已改为 " + v, () => {
+      saveSchedule((kind === "off" ? "计划关机" : "计划开机") + "已改为 " + v, () => {
         SCH[kind] = prev;
         renderSchedule();
       });
@@ -2397,11 +2406,39 @@
       130: "，被中断", 137: "，被系统强行结束", 143: "，被终止" })[rc] || "";
   }
 
+  function reviewScript(info) {
+    const dialog = document.createElement("dialog");
+    dialog.className = "viewer";
+    dialog.style.padding = "20px";
+    const title = document.createElement("h3"); title.textContent = "执行前审查：" + info.name;
+    const summary = document.createElement("p");
+    summary.textContent = info.source + " · " + (info.changed ? "首次执行或内容已变化" : "与上次执行一致") + " · SHA256 " + info.sha256;
+    summary.style.overflowWrap = "anywhere";
+    const pre = document.createElement("pre"); pre.textContent = info.diff || info.content;
+    pre.style.cssText = "max-height:45vh;overflow:auto;white-space:pre-wrap";
+    const label = document.createElement("label"); label.textContent = "执行超时（10–3600 秒） ";
+    const timeout = document.createElement("input"); timeout.type = "number"; timeout.min = "10"; timeout.max = "3600"; timeout.value = "600"; label.append(timeout);
+    const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "取消";
+    const start = document.createElement("button"); start.className = "btn primary"; start.textContent = "已审查，执行此版本";
+    dialog.append(title, summary, pre, label, cancel, start); document.body.append(dialog); dialog.showModal();
+    return new Promise(resolve => {
+      let done = false;
+      const finish = value => { if (done) return; done = true; dialog.close(); dialog.remove(); resolve(value); };
+      cancel.onclick = () => finish(null); dialog.oncancel = () => finish(null);
+      start.onclick = () => { const seconds = Number(timeout.value); if (Number.isInteger(seconds) && seconds >= 10 && seconds <= 3600) finish({timeout: seconds}); else timeout.reportValidity(); };
+    });
+  }
+
   async function runScript(name) {
     if (running) {
       toast("已有脚本在运行，等它结束再试", "err");
       return;
     }
+    let inspected;
+    try { inspected = (await apiGet("/api/script/inspect?name=" + encodeURIComponent(name))).data; }
+    catch (error) { toast(error.message, "err"); return; }
+    const approved = await reviewScript(inspected);
+    if (!approved) return;
     setRunning(true);
     setTermTarget(name);
     termStatus.textContent = "运行中";
@@ -2416,7 +2453,7 @@
       if (termCard) termCard.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
-    const res = await apiPost("/api/script/start", { name: name });
+    const res = await apiPost("/api/script/start", { name: name, sha256: inspected.sha256, timeout: approved.timeout });
     if (!res.ok) {
       termWrite(res.msg || "启动失败", "err");
       termStatus.textContent = "失败";
@@ -3157,6 +3194,7 @@
   function applyState() {
     const d = S2.state;
     if (!d) return;
+    setDeviceClock(num(d.now), num(d.tz_offset));
 
     // ---- 风扇策略与曲线（先于读数：读数的「哪一路触发」要用到曲线）----
     const fan = d.conf && d.conf.fan;
@@ -3194,16 +3232,18 @@
     // 是最容易被当成「输入框坏了」的一类 bug
     const ps = d.conf && d.conf.power_schedule;
     if (ps && !schDirty) {
+      SCH.extended = Array.isArray(ps.weekdays);
+      SCH.next = ps.next_shutdown && ps.next_shutdown.ts;
+      SCH.maintenance = Number(ps.maintenance_until) || 0;
       SCH.on = ps.enabled === "1" || ps.enabled === "true" || ps.enabled === true;
-      if (ps.shutdown_time) SCH.off = ps.shutdown_time;
-      if (ps.boot_time) SCH.boot = ps.boot_time;
+      if (typeof ps.shutdown_time === "string") SCH.off = ps.shutdown_time;
+      if (typeof ps.boot_time === "string") SCH.boot = ps.boot_time;
       renderSchedule();
     }
 
     // ---- 端口 / 主机名 / 运行时长 ----
     if (d.port && document.activeElement !== portInput) portInput.value = d.port;
-    const host = d.hostname || location.hostname;
-    if (d.port) portUrl.textContent = location.protocol + "//" + host + ":" + d.port;
+    if (d.port) portUrl.textContent = portAddress(d.port);
 
     // 运行时长一处算、两处用（顶栏 + 设备信息卡）：口径只写一遍，
     // 免得以后改格式只改了一边，两处对不上。
@@ -3213,7 +3253,6 @@
     const up = num(d.uptime);
     if (up !== null) { upBase = up; upAt = Date.now(); }
     const upText = renderUptime();
-    setDeviceClock(num(d.now), num(d.tz_offset));
 
     // ---- 概览页「设备信息」----
     // 这几行以前是写死的演示数据（主机名、8 天 20 小时、v1.5.1），升版后
@@ -3282,6 +3321,7 @@
   if (location.port) portInput.value = location.port;
 
   const portValue = () => Number(portInput.value);
+  function portAddress(port) { const url = new URL(location.href); url.port = String(port); url.pathname = "/"; url.search = ""; url.hash = ""; return url.href; }
   const portValid = () => {
     const v = portValue();
     return Number.isInteger(v) && v >= 1024 && v <= 65535;
@@ -3310,7 +3350,7 @@
     if (!portArmed) {
       portArmed = true;
       portSave.textContent = "确认重启并跳转";
-      portNext.textContent = "http://" + (location.hostname || "fnOS-S2") + ":" + portValue();
+      portNext.textContent = portAddress(portValue());
       portConfirm.hidden = false;
       portTimer = setTimeout(portDisarm, 8000);
       return;
@@ -3324,10 +3364,10 @@
       toast(res.msg || "改端口失败", "err");
       return;
     }
-    portUrl.textContent = "http://" + (location.hostname || "fnOS-S2") + ":" + p;
+    portUrl.textContent = portAddress(p);
     toast("端口已改为 " + p + "，服务重启中…3 秒后请访问新地址");
     // 服务会停 1 秒再起，起在新端口上。3 秒后自动跳，跳不过去也有上面那句地址兜底。
-    const next = "http://" + (location.hostname || "fnOS-S2") + ":" + p + "/";
+    const next = portAddress(p);
     setTimeout(() => { location.href = next; }, 3000);
   });
   portCheck();
@@ -3560,7 +3600,7 @@
     const to = setTimeout(() => ctl && ctl.abort(), 2500);
     try {
       const r = await fetch(path, { cache: "no-store", signal: ctl ? ctl.signal : undefined,
-        headers: TOKEN ? { "X-S2-Token": TOKEN } : {} });
+        credentials: "omit", headers: authHeaders() });
       if (r.status === 401) return { st: "auth" };
       if (!r.ok) return { st: "down" };
       return { st: "up", body: path === "/api/state" ? await r.json().catch(() => null) : null };
@@ -3649,8 +3689,18 @@
       ? "需要先设置访问口令：在飞牛「应用设置 → 配置」里设置后，才能从这台设备之外重启"
       : POWER_SUB_DEFAULT;
     powerSub.classList.toggle("locked", dangerLocked);
+    syncScheduleControls();
     portCheck();
   }
+
+  const logoutButton = document.getElementById("logout");
+  logoutButton.hidden = !SESSION;
+  logoutButton.addEventListener("click", async () => {
+    logoutButton.disabled = true;
+    const result = await apiPost("/api/logout", {});
+    if (result.ok || loginRedirecting) authExpired();
+    else { toast(result.msg || "退出失败，请重试", "err"); logoutButton.disabled = false; }
+  });
 
   /* ---------- 启动：三条节奏各自独立轮询（§5） ----------
      /api/sensor 按 pollSec（默认 10 秒，§6 可改）；/api/state 固定 60 秒 + 写操作成功后

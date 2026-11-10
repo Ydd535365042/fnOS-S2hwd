@@ -1,4 +1,4 @@
-"""把 _extracted_app + _extracted_fpk 打成 fnOS 应用包，格式照抄原 1.6.2 包：
+"""把 app + fpk 源码目录打成 fnOS 应用包，格式照抄原 1.6.2 包：
   外层 .fpk = gzip 压缩的 GNU tar，成员 root/root，cmd/config/wizard 目录 + 图标 + LICENSE + manifest + app.tgz
   app.tgz   = gzip 压缩的 GNU tar，成员 root/root，文件 0o705（原包就是这么给的，脚本靠它有执行位）
   manifest 的 checksum = app.tgz 的 MD5（原包里核对过：27a567a5… 正好是原 app.tgz 的 MD5）
@@ -6,7 +6,7 @@
 不改源目录：manifest 在内存里改版本号 / changelog / checksum 后直接写进包。
 排除 __pycache__ / *.pyc / 测试沙箱残留。打完再解开自检一遍。
 
-用法：python -I build_fpk.py <_extracted_app> <_extracted_fpk> <输出.fpk> <版本号> <changelog文本文件>"""
+用法：python -I build_fpk.py <app> <fpk> <输出.fpk> <版本号> <changelog文本文件>"""
 import gzip
 import hashlib
 import io
@@ -59,27 +59,14 @@ def tar_gz(entries):
     return buf.getvalue()
 
 
-# ---------- 出厂脚本的中文文件名 ----------
-# 原包在 Windows 上解开时，UTF-8 中文文件名被按 GBK 解成了乱码（00-閮ㄧ讲…），有的还丢了字节。
-# 原 app.tgz 里的名字是对的：按编号前缀（00- / 10- …）取回原名，内容用现在磁盘上的。
+# 出厂脚本直接使用 Git 源文件名，不依赖旧版 app.tgz。
 ORIG_NAMES = {}
-with tarfile.open(os.path.join(FPK, "app.tgz"), "r:gz") as _t:
-    for _n in _t.getnames():
-        if _n.startswith("server/default_scripts/"):
-            _b = _n.rsplit("/", 1)[1]
-            _m = re.match(r"^(\d\d)-", _b)
-            if _m:
-                ORIG_NAMES[_m.group(1)] = _b
-
-
-def fix_name(rel, fn):
-    if rel != "server/default_scripts" or fn.isascii():
-        return fn
-    m = re.match(r"^(\d\d)-", fn)
-    if not m or m.group(1) not in ORIG_NAMES:
-        raise SystemExit("出厂脚本 %r 认不出原名，停止打包" % fn)
-    print("  还原文件名 %s → %s" % (fn.encode("unicode_escape").decode()[:40], ORIG_NAMES[m.group(1)]))
-    return ORIG_NAMES[m.group(1)]
+for filename in os.listdir(os.path.join(APP, "server", "default_scripts")):
+    match = re.match(r"^(\d\d)-.+\.sh$", filename)
+    if match:
+        if match.group(1) in ORIG_NAMES:
+            raise SystemExit("出厂脚本编号重复: " + match.group(1))
+        ORIG_NAMES[match.group(1)] = filename
 
 
 # ---------- app.tgz ----------
@@ -93,7 +80,7 @@ for root, dirs, files in os.walk(APP):
         if fn.endswith(SKIP_EXT):
             continue
         p = os.path.join(root, fn)
-        name = fix_name(rel, fn)
+        name = fn
         arc = (name if rel == "." else rel + "/" + name)
         with open(p, "rb") as f:
             data = lf_only(arc, f.read())
@@ -160,13 +147,16 @@ if any(x.uname != "root" or x.gname != "root" for x in t.getmembers()):
 ta = tarfile.open(fileobj=io.BytesIO(a2), mode="r:gz")
 an = set(ta.getnames())
 for need in ("server/server.py", "server/hwctl.py", "server/hwinfo.py", "server/alerts.py", "server/public/app.js",
+             "server/s2security.py", "server/public/login.js", "agent/install-hw-agent.sh",
+             "server/s2store.py", "server/s2ops.py", "server/s2hardware.py", "server/job_runner.py",
+             "server/public/manage.html", "server/public/manage.js", "server/public/manage.css", "firmware/s2_schedule.py",
              "server/public/index.html", "server/public/style.css", "agent/s2hw-agent.py", "firmware/deploy.sh",
              "firmware/fan-control.sh", "server/default_scripts/00-部署全部硬件配置.sh", "server/default_scripts/_common.sh"):
     if need not in an:
         errs.append("app.tgz 缺 " + need)
 ds = sorted(n.rsplit("/", 1)[1] for n in an if n.startswith("server/default_scripts/") and n.endswith(".sh"))
 if sorted(ORIG_NAMES.values()) != [d for d in ds if re.match(r"^\d\d-", d)]:
-    errs.append("出厂脚本名和原包对不上: %s" % ds)
+    errs.append("出厂脚本名和源码对不上: %s" % ds)
 print("出厂脚本:", ds)
 bad = [x.name for x in ta.getmembers() if "__pycache__" in x.name or x.name.endswith(".pyc")]
 if bad:

@@ -323,6 +323,7 @@ write_status() {
     {
         echo "timestamp=$ts"
         echo "mode=$mode"
+        echo "guard_reason=$guard_reason"
         echo "level=$duty"
         echo "duty_pct=$duty"
         echo "cpu_temp=$cpu"
@@ -330,6 +331,43 @@ write_status() {
         echo "hdd_source=$src"
         echo "disks=$disks"
     } > "${STATUS_FILE}.tmp" 2>/dev/null && mv "${STATUS_FILE}.tmp" "$STATUS_FILE" 2>/dev/null
+}
+
+# 独立于网页进程的保护策略；只解析固定数值字段，绝不 source 配置。
+GUARD_CONF="${S2_GUARD_CONF:-/etc/s2hwctl/fan-guard.conf}"
+guard_active=0; guard_bad=0; guard_good=0; guard_reason=""
+check_guard() {
+    local cpu=$1 disk=$2 enabled=0 cpu_limit=80 disk_limit=55 fail_samples=3 k v reason=""
+    if [ -r "$GUARD_CONF" ]; then
+        while IFS='=' read -r k v; do
+            case "$v" in ''|*[!0-9]*) continue ;; esac
+            case "$k" in
+                ENABLED) enabled=$v ;;
+                CPU_LIMIT) [ "$v" -ge 50 ] && [ "$v" -le 85 ] && cpu_limit=$v ;;
+                DISK_LIMIT) [ "$v" -ge 40 ] && [ "$v" -le 60 ] && disk_limit=$v ;;
+                FAIL_SAMPLES) [ "$v" -ge 1 ] && [ "$v" -le 10 ] && fail_samples=$v ;;
+            esac
+        done < "$GUARD_CONF"
+    fi
+    if [ "$enabled" != 1 ]; then
+        guard_active=0; guard_bad=0; guard_good=0; guard_reason=""; return
+    fi
+    if [ "$cpu" -le 0 ] || [ "$cpu" -gt 125 ]; then reason="CPU 温度传感器无效"
+    elif [ "$cpu" -ge "$cpu_limit" ]; then reason="CPU 持续超温"
+    elif [ "$disk" -ge "$disk_limit" ]; then reason="硬盘持续超温"; fi
+    if [ -n "$reason" ]; then
+        guard_bad=$((guard_bad + 1)); guard_good=0
+        if [ "$guard_bad" -ge "$fail_samples" ]; then
+            [ "$guard_active" -eq 0 ] && log "风扇保护启用：$reason"
+            guard_active=1; guard_reason="$reason"
+        fi
+    elif [ "$cpu" -lt $((cpu_limit - 3)) ] && [ "$disk" -lt $((disk_limit - 3)) ]; then
+        guard_bad=0; guard_good=$((guard_good + 1))
+        if [ "$guard_good" -ge 2 ]; then
+            [ "$guard_active" -eq 1 ] && log "风扇保护恢复：传感器正常且温度下降"
+            guard_active=0; guard_reason=""
+        fi
+    fi
 }
 
 # ---------- 主循环 ----------
@@ -438,10 +476,18 @@ main() {
             log "全速测试结束，回到温控"
         fi
 
+        local was_guard=$guard_active
+        check_guard "$cpu" "$hdd_max"
+        if [ "$guard_active" -eq 1 ]; then
+            target_duty=100; mode=protect
+        elif [ "$was_guard" -eq 1 ]; then
+            last_duty=-1
+        fi
+
         # ---- 去抖 ----
         # last_duty=-1：刚启动 / 测试刚结束。init_pwm 把风扇关了，这时再等两轮去抖
         # 就是白白停转 6 秒（每次在页面上保存曲线都会重启服务），所以立刻生效。
-        if [ "$target_duty" -ne "$last_duty" ] && { [ "$forcing" -eq 1 ] || [ "$last_duty" -lt 0 ]; }; then
+        if [ "$target_duty" -ne "$last_duty" ] && { [ "$forcing" -eq 1 ] || [ "$guard_active" -eq 1 ] || [ "$last_duty" -lt 0 ]; }; then
             last_duty=$target_duty
             debounce_cnt=0
             if [ $use_pwm -eq 1 ]; then set_fan_speed_pwm "$last_duty"; else set_fan_speed_gpio "$last_duty"; fi

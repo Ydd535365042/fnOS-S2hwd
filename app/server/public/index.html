@@ -323,15 +323,15 @@
             <div class="mini-times">
               <div class="mini-time">
                 <button class="t" id="ov-sch-off" data-edit-time="off" title="点击修改">03:00</button>
-                <div class="k">每日关机</div>
+                <div class="k">计划关机</div>
               </div>
               <div class="mini-time">
                 <button class="t" id="ov-sch-boot" data-edit-time="boot" title="点击修改">08:00</button>
-                <div class="k">每日开机</div>
+                <div class="k">计划开机</div>
               </div>
             </div>
             <div class="mini-foot"><span>距下次关机</span><b id="ov-sch-gap">—</b></div>
-            <p class="help">开机靠硬件时钟唤醒，需保持通电；时间可直接点开修改</p>
+            <p class="help">开机靠硬件时钟唤醒，需保持通电；星期与跳过日期在运维中心设置</p>
           </div>
 
           <div class="card col-8 svc-card">
@@ -368,7 +368,8 @@
               <div class="row"><dt>当前访问地址</dt><dd id="port-url" class="mono">http://fnOS-S2:18899</dd></div>
               <div class="row"><dt>访问口令</dt><dd id="acc-token">—</dd></div>
             </dl>
-            <p class="help acc-hint" id="acc-hint" hidden>没有口令时，局域网里的设备不能改端口、运行脚本或重启设备。口令在飞牛「应用设置 → 配置」里设置。</p>
+            <button class="btn sm ghost" id="logout" type="button" hidden>退出登录</button>
+            <p class="help acc-hint" id="acc-hint" hidden>没有口令时，局域网里的设备只能查看硬件状态。硬件控制、配置修改和脚本执行需要先在飞牛「应用设置 → 配置」里设置口令。</p>
           </div>
 
           <div class="card col-12">

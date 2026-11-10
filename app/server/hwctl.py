@@ -36,13 +36,15 @@ _HWCTL_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HWCTL_DIR not in _sys.path:
     _sys.path.insert(0, _HWCTL_DIR)
 import hwinfo  # noqa: E402
+import s2security
+import s2hardware
 
 # ---------------- 应用版本 ----------------
 # 装到设备上以后，应用中心会把真实版本写进 <应用根>/manifest 的 version= 字段，
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.0.0"
+APP_VER = "1.0.1"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -262,10 +264,8 @@ def write_kv(path, updates, header=None):
             new_lines.append("%s=%s" % (k, v))
     if header and not lines:
         new_lines.insert(0, header)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write("\n".join(new_lines) + "\n")
-    os.replace(tmp, path)
+    s2security.atomic_text(path, "\n".join(new_lines) + "\n",
+                           mode=0o600 if os.path.basename(path) == "settings.conf" else None)
     _KV_CACHE.pop(path, None)  # 自己刚写的文件，别让 mtime 缓存把旧内容吐回去
     return True
 
@@ -528,28 +528,7 @@ def rtc_wake_supported():
 
 
 def op_set_power_schedule(params):
-    enabled = 1 if params.get("enabled") else 0
-    shutdown_time = str(params.get("shutdown_time") or "").strip()
-    boot_time = str(params.get("boot_time") or "").strip()
-
-    hhmm = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-    if shutdown_time and not hhmm.match(shutdown_time):
-        return False, "关机时间格式应为 HH:MM（24 小时制）"
-    if boot_time and not hhmm.match(boot_time):
-        return False, "开机时间格式应为 HH:MM（24 小时制）"
-
-    updates = {
-        "ENABLED": str(enabled),
-        "SHUTDOWN_TIME": shutdown_time,
-        "BOOT_TIME": boot_time,
-    }
-    write_kv(APP_SCHED_CONF, updates)
-    # 应用：写 timer / 设 RTC 闹钟
-    if os.path.exists(SCHED_APPLY_BIN):
-        run(["bash", SCHED_APPLY_BIN, "apply"], timeout=30)
-    if not rtc_wake_supported() and boot_time:
-        return True, "已保存，但本机未检测到 RTC 唤醒能力，定时开机可能不生效；定时关机正常。"
-    return True, "已保存并应用定时开关机配置"
+    return s2hardware.dispatch(_sys.modules[__name__], "set_power_schedule", params)
 
 
 # ---------------- 立即重启 ----------------
@@ -1031,13 +1010,13 @@ def collect_status():
     _up = sysfs_read("/proc/uptime", "").split() or _uptime_fallback()
     # 每个配置文件只读一次：原先 sched 读 3 遍、led_override 读 2 遍，
     # 一次轮询就是 5 次多余的 open+parse。
-    sched = read_kv(APP_SCHED_CONF)
     led_ovr = read_kv(LED_OVERRIDE_CONF)
 
     # 模块只扫目录（纯文件 IO）。模块声明的服务并进同一次 systemctl show，
     # 无论装了多少模块，这里始终只起 1 个进程。
     mods = scan_patch_modules()
     svc = services_state(HW_SERVICES + module_services(mods))
+    sched_ok, sched_info = s2hardware.dispatch(_sys.modules[__name__], "schedule_info", {})
 
     st = {
         "root": is_root(),
@@ -1047,7 +1026,7 @@ def collect_status():
         # 顶栏时钟走设备时间：浏览器记下与本机的差，之后每秒本地推算，不为时钟多发请求。
         # tz_offset 是设备时区相对 UTC 的秒数（含夏令时），东八区 = 28800。
         "now": round(time.time(), 3),
-        "tz_offset": time.localtime().tm_gmtoff,
+        "tz_offset": getattr(time.localtime(), "tm_gmtoff", -time.timezone),
         # 一次 systemctl show 取回全部服务状态，不再每个服务单独起进程
         "services": {s: svc.get(s, "unknown") for s in HW_SERVICES},
         "leds": list_leds(),
@@ -1059,12 +1038,7 @@ def collect_status():
                 "power": led_ovr.get("POWER_LED", "auto"),
                 "sata": led_ovr.get("SATA_LED", "auto"),
             },
-            "power_schedule": {
-                "enabled": sched.get("ENABLED", "0"),
-                "shutdown_time": sched.get("SHUTDOWN_TIME", ""),
-                "boot_time": sched.get("BOOT_TIME", ""),
-                "rtc_wake": rtc_wake_supported(),
-            },
+            "power_schedule": sched_info if sched_ok else {"enabled": False, "error": str(sched_info)},
         },
         "scripts": list_scripts(),
         "patches": [patch_view(m, svc) for m in mods],
@@ -1756,10 +1730,15 @@ OPS = {
 
 
 def dispatch(op, params):
+    if op in s2hardware.OPS:
+        return s2hardware.dispatch(_sys.modules[__name__], op, params)
     fn = OPS.get(op)
     if not fn:
         return False, "未知操作：%s" % op
     try:
+        if op.startswith("set_"):
+            with s2hardware.LOCK:
+                return fn(params or {})
         return fn(params or {})
     except Exception as e:  # noqa
         return False, msg_detail("执行时发生内部错误", str(e))

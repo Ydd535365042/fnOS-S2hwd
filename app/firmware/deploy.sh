@@ -129,6 +129,7 @@ inst "$SRC/boot-version-guard.sh"  /usr/local/bin/boot-version-guard.sh 755
 inst "$SRC/boot-version-guard.service" /etc/systemd/system/boot-version-guard.service 644
 
 # ---- 定时开关机 ----
+inst "$SRC/s2_schedule.py" /usr/local/sbin/s2_schedule.py 755
 inst "$SRC/s2-power-schedule.sh"      /usr/local/sbin/s2-power-schedule.sh 755
 inst "$SRC/s2-power-schedule.service" /etc/systemd/system/s2-power-schedule.service 644
 inst "$SRC/s2-power-shutdown.service" /etc/systemd/system/s2-power-shutdown.service 644
@@ -172,11 +173,8 @@ for svc in beep-boot.service power-led-net.service sata-led-enable.service \
   fi
 done
 
-# 定时关机定时器默认不启用（仅当用户在控制台配置时间后才由脚本 enable）
-if [ -f "/etc/systemd/system/s2-power-shutdown.timer" ]; then
-  systemctl disable s2-power-shutdown.timer >/dev/null 2>&1 || true
-  log "定时关机定时器已就位（未启用，待用户在控制台配置）"
-fi
+# 上面的 s2-power-schedule.service 已按保留的配置启用或关闭定时器。
+# 不在这里再次 disable，否则升级会取消用户已有计划的开机自启。
 
 # 每小时自检（只修复、不重启）
 systemctl enable selfheal-hourly.timer >/dev/null 2>&1 && \

@@ -26,4 +26,21 @@ if [ -n "$FIRMWARE_DIR" ]; then
     echo "==> 升级：重新部署硬件脚本 $FIRMWARE_DIR" >> "$VAR_DIR/server.log" 2>/dev/null
     bash "$FIRMWARE_DIR/deploy.sh" "$FIRMWARE_DIR" >> "$VAR_DIR/server.log" 2>&1 || true
 fi
+
+# 升级已经安装的可选代理；不能让旧的无认证 root 监听继续常驻。
+if systemctl cat s2hw-agent.service >/dev/null 2>&1; then
+    if ! systemctl stop s2hw-agent.service >/dev/null 2>&1; then
+        echo '安全升级失败：无法停止旧硬件代理，请以 root 检查服务状态。' >> "$VAR_DIR/server.log"
+        exit 1
+    fi
+    systemctl disable s2hw-agent.service >/dev/null 2>&1 || true
+    AGENT_INSTALL=""
+    for d in "${DEST}/agent" "${DEST}/target/agent" \
+             "/var/apps/${APP_NAME}/agent" "/var/apps/${APP_NAME}/target/agent"; do
+        if [ -f "$d/install-hw-agent.sh" ]; then AGENT_INSTALL="$d/install-hw-agent.sh"; break; fi
+    done
+    if [ -z "$AGENT_INSTALL" ] || ! bash "$AGENT_INSTALL" >> "$VAR_DIR/server.log" 2>&1; then
+        echo '安全升级：硬件代理已停止，重新安装失败，请查看日志后重新部署代理。' >> "$VAR_DIR/server.log"
+    fi
+fi
 exit 0

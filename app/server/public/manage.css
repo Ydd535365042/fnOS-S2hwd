@@ -1,0 +1,21 @@
+/* 仅补充新功能表单与图表；颜色、字体、卡片和顶栏复用原控制台 style.css。 */
+.ops-page .content{width:100%}
+.ops-navigation{display:flex;gap:6px;overflow:auto;border-bottom:1px solid var(--line);padding:0 0 12px;margin-bottom:18px;scrollbar-width:thin}
+.ops-navigation button{flex:none}
+.ops-navigation button[aria-current="page"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+.ops-page .heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+.ops-page h1{font-size:20px;font-weight:600}.ops-page h2{font-size:15px;font-weight:600;margin-bottom:14px}.ops-page h3{font-size:13px;margin:14px 0 10px}
+.ops-page .cards{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:16px;margin-bottom:16px}
+.ops-page .cards>.card{grid-column:span 6;margin:0}.ops-page .cards>.wide{grid-column:1/-1}
+.ops-page .card{margin-bottom:16px;min-width:0}.ops-page .fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.ops-page .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;min-width:0}.ops-page .field.check{flex-direction:row;align-items:center;min-height:32px}.ops-page .field:has(textarea){grid-column:1/-1}
+.ops-page input:not([type=checkbox]),.ops-page select,.ops-page textarea{font:inherit;width:100%;min-width:0;padding:9px 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--card);color:var(--fg)}
+.ops-page input[type=checkbox]{accent-color:var(--accent)}.ops-page textarea{min-height:90px;resize:vertical}.ops-page .actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
+.ops-page .table-scroll{overflow:auto;max-width:100%}.ops-page table{width:100%;border-collapse:collapse;font-size:12.5px}.ops-page th,.ops-page td{padding:11px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:anywhere}.ops-page th{font-weight:500;color:var(--muted)}
+.ops-page pre{font:12px/1.65 var(--f-mono);white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:400px;border:1px solid var(--line);border-radius:6px;background:var(--card-2);padding:12px}
+.ops-page .metric{font-size:25px;font-weight:600;margin:8px 0 12px}.ops-page .note,.ops-page .empty{color:var(--muted);font-size:12px;line-height:1.7;margin:10px 0}.ops-page .good{color:var(--ok)}.ops-page .bad{color:var(--crit)}
+.ops-page #status{padding:10px 12px;margin-bottom:14px;border:1px solid var(--line);border-radius:6px;background:var(--ok-soft)}.ops-page #status.error{background:var(--crit-soft);color:var(--crit)}
+.ops-page .chart{width:100%;height:220px;display:block;background:var(--card-2);border-radius:6px}.ops-page .chart text{fill:var(--muted);font:11px var(--f-ui)}.ops-page .chart polyline{fill:none;stroke:var(--accent);stroke-width:2;vector-effect:non-scaling-stroke}
+.ops-page dialog{width:min(800px,94vw);padding:20px;border:1px solid var(--line-2);border-radius:8px;background:var(--card);color:var(--fg)}.ops-page dialog::backdrop{background:#0007}
+@media(max-width:800px){.ops-page .cards>.card{grid-column:1/-1}}
+@media(max-width:620px){.ops-page .fields{grid-template-columns:1fr}.ops-page #identity{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ops-page .table-scroll table{min-width:480px}.ops-page .topbar-inner{gap:8px}.ops-page .brand{padding-right:8px}.ops-page .brand-sub{display:none}.ops-page .brand-org{display:none}.ops-page .brand-mark{display:none}.ops-page h1{font-size:18px}}

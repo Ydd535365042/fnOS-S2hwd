@@ -6,8 +6,8 @@ S2 硬件控制台 —— HTTP 服务（仅用 Python 标准库）
 路由（同时兼容 /api/xxx 与 /api/v1/xxx 两种前缀）
 ----
 GET  /                     静态页面（命中时带 ETag/Last-Modified，304 省流量）；
-                           配了口令且未登录时返回登录页
-POST /login                表单 token / next，口令正确换发 cookie 并跳回
+                           公开静态应用壳，所有设备数据均经 API 鉴权
+POST /login                表单 token / next，返回短期会话（不设置认证 Cookie）
 GET  /api/state            综合状态（附 access: {token 是否设置, danger 本次来源能否做高危操作}）
 GET  /api/sensor           轻量传感器快照（10 秒轮询，不起子进程）
 GET  /api/hwinfo?force=    慢变硬件信息（CPU/内存/磁盘/SMART/文件系统/阵列/网卡），
@@ -29,14 +29,17 @@ POST /api/restart          {port} 改端口并自重启
 3) 脚本上传：文件名白名单正则 + 长度上限 + 内容大小上限，拒绝二进制内容。
 4) 请求体有大小上限，超限返回 413，避免内存打满。
 5) 写操作落审计日志（var/audit.log），便于事后追溯。
-6) 能拿到 root 的接口（脚本上传/执行、改端口、补丁模块）和重启单独设门：
+6) 所有硬件写操作、脚本接口、配置修改和重启统一设门：
    未配置 TOKEN 时只允许本机调用，配置后凭口令调用。
    —— 否则「没设口令」等于把整台设备的 root shell 挂在局域网里。
-7) 口令登录走 POST /login（不进地址栏和浏览器历史），换发 HttpOnly cookie。
+7) POST /login 签发 12 小时会话，浏览器按来源保存在 sessionStorage，仅通过请求头发送。
    同一来源 5 分钟内错 10 次锁 5 分钟，锁住期间正确口令也不认。
 """
 
 import hmac
+import hashlib
+import difflib
+import signal
 import json
 import os
 import re
@@ -55,6 +58,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hwctl  # noqa: E402
 import hwinfo  # noqa: E402  （只读本地兜底路径用：非 root 且无 agent 时的 /api/hwinfo）
+import s2security
+import s2ops
+from s2store import Problem, ROLES
 import alerts  # noqa: E402  （硬件告警：后台线程定时检查，记录给右上角铃铛）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -76,20 +82,21 @@ DANGER_PATHS = ("/api/script/save", "/api/script/start", "/api/script/upload",
                 "/api/script/delete", "/api/script/defaults", "/api/restart")
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
-# /api/hw 里「改完就把自己关在门外」的 op —— 单独再设一道门。
-#
-# 为什么只圈 set_port，不圈 set_fan / set_led_override / set_power_schedule：
-#   那几个写的是 /etc 下的风扇、灯、定时配置，改错了在网页上再点一下就改回来，
-#   本来就是「控制台要干的事」。而且没配 TOKEN 时把风扇控制也锁上，等于让
-#   局域网里所有人都调不了风扇 —— 这是把一个家用的核心场景给废了。
-#   真正不可逆的是改端口：写进 settings.conf 后，下一次重启（哪怕只是断电）
-#   应用就起在新端口上，新端口可能被防火墙挡着，人就再也进不来了。
-#   这条和 /api/restart 同级 —— 后者已经过 _danger_ok，前者当时漏了。
-#   其余 op 靠 audit.log 留痕（每条 hw 调用都记 remote + 参数 + 结果）。
-#
-# v1.6 追加 patch：补丁模块的脚本以 root 执行，且模块目录本身可写 ——
-#   它和 /api/script/start 是同一类风险，必须同级门禁。
-DANGER_OPS = ("set_port", "patch")
+# 所有硬件写操作均通过敏感操作授权；只读查询可以保留无口令访问。
+READ_OPS = ("status", "hwinfo", "logs")
+OPS_READ = {"me", "overview", "history", "disks", "diagnostics", "report", "schedule", "guard", "fleet"}
+OPS_CONTROL = {"schedule", "maintenance", "guard", "diagnostics/repair"}
+_OPS = None
+_OPS_LOCK = threading.Lock()
+
+
+def get_ops():
+    global _OPS
+    with _OPS_LOCK:
+        if _OPS is None:
+            _OPS = s2ops.Operations(os.path.join(VAR_DIR, "operations"), hw_call,
+                                    hwctl.collect_sensor, lambda: ALERTS.snapshot(200))
+        return _OPS
 
 # 电源操作的一次性确认码：nonce -> (action, 过期时刻)。见 Handler._power。
 # 重启和脚本执行同级门禁（_danger_ok）：没配口令时只认本机，配了口令凭口令。
@@ -106,12 +113,12 @@ FAIL_MAX = 10
 FAIL_WINDOW = 300
 AUTH_FAILS = {}            # ip -> [失败时刻, ...]
 AUTH_FAIL_LOCK = threading.Lock()
-COOKIE_NAME = "s2token"
+COOKIE_NAME = "s2token"  # 仅用于清理旧版本 Cookie，不再接受它认证。
+SESSIONS = s2security.Sessions()
 
-# 403 的唯一成因：TOKEN 为空（_auth_ok 恒 True，绝不会走到 401）+ 来源不是回环。
-# 唯一的解法是先在应用设置里启用口令、让服务重启，之后才有口令可用。
+# 未配置口令时，远程来源只能查询硬件；启用口令并重启后可登录写入。
 DANGER_DENY_MSG = (
-    "当前未设置访问口令：上传/运行脚本、改端口仅允许在设备本机操作。"
+    "当前未设置访问口令：硬件控制、脚本执行和配置修改仅允许在设备本机操作。"
     "请到飞牛「应用设置 → 配置」设置访问口令并保存，"
     "应用重启后刷新本页，输入口令即可。"
 )
@@ -185,14 +192,17 @@ def audit(action, detail, remote, ok):
 # ---------------- 硬件操作分发 ----------------
 def agent_call(op, params):
     try:
+        key = s2security.read_agent_key()
+        if not key:
+            return {"ok": False, "msg": "硬件代理凭据未配置，请重新部署代理"}
         req = urllib.request.Request(
             AGENT + "/hw",
             data=json.dumps({"op": op, "params": params}).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
+            headers={"Content-Type": "application/json", "X-S2-Agent-Key": key})
         # timeout 是 urlopen 的参数，不是 Request 的 —— 写在 Request 上会抛 TypeError，
         # 非 root 安装下每一个经代理的写操作都会变成「硬件代理不可用」。
         # 定时开关机 apply 最长 30 秒，留出余量。
-        with urllib.request.urlopen(req, timeout=45) as r:
+        with urllib.request.urlopen(req, timeout=180 if op == "config_apply" else 45) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception as e:  # noqa
         # 异常文本（ConnectionRefusedError 等）是英文、给排障用，不直接当提示语——
@@ -217,8 +227,14 @@ def agent_available():
                 return _AGENT_STATE["ok"]
         ok = False
         try:
-            with urllib.request.urlopen(AGENT + "/ping", timeout=AGENT_PING_TIMEOUT) as r:
-                ok = (r.status == 200)
+            key = s2security.read_agent_key()
+            if not key:
+                raise ValueError("agent key unavailable")
+            req = urllib.request.Request(AGENT + "/ping", headers={"X-S2-Agent-Key": key})
+            with urllib.request.urlopen(req, timeout=AGENT_PING_TIMEOUT) as r:
+                info = json.loads(r.read().decode("utf-8"))
+                ok = (r.status == 200 and info.get("root") is True
+                      and info.get("hwctl") is True and info.get("auth") == 1)
         except Exception:
             ok = False
         with _AGENT_LOCK:
@@ -267,6 +283,8 @@ def hw_call(op, params):
         force = bool(params.get("force"))
         return {"ok": True, "msg": "只读模式（未检测到管理员权限代理，缺少健康检测数据）",
                 "data": hwinfo.collect_hwinfo(force=force)}
+    if op in ("config_snapshot", "config_validate", "schedule_info", "fan_guard_info", "diagnostics_files"):
+        return _shape_hw_result(*hwctl.dispatch(op, params))
     return {"ok": False, "msg": "当前为普通用户身份且未部署管理员权限代理，无法写入硬件；"
                                "请以管理员权限部署 s2hw-agent，或在应用中心改用管理员权限安装。",
             "detail": ""}
@@ -509,9 +527,14 @@ def read_job(job):
             "lost": done and rc is None}
 
 
-def start_job(path):
+def start_job(path, timeout=600, expected_hash=None):
     cleanup_jobs()
     job = uuid.uuid4().hex
+    with open(path, "rb") as source:
+        content = source.read(MAX_RUN_BYTES + 1)
+    if len(content) > MAX_RUN_BYTES or (expected_hash and hashlib.sha256(content).hexdigest() != expected_hash):
+        raise Problem("脚本内容已改变或过大，请重新审查", 409)
+    original = path
     log, rcf, pidf = _job_files(job)
     def fail(lines, rc):
         # 没跑起来：只在内存里记一条结果（"rc" 键让 read_job 不去等外壳）
@@ -535,21 +558,25 @@ def start_job(path):
     # 这个标记下返回 0；真机没有垫片，设了也不影响任何命令。
     if path.lower().endswith(".run"):
         env["S2_FAKE_ROOT"] = "1"
-    # 外壳：跑脚本（输出全进日志文件）→ 把退出码写进 .rc。脚本路径、日志路径都走位置参数，
-    # 不拼进命令字符串（文件名是用户上传的，可能带引号 / 分号）。
-    # 只用 bash 内建（echo / 重定向），不依赖 mv 等外部命令：脚本可能把 PATH 改坏。
-    # .rc 一行数字写完才算数：read_job 读到空文件会当作「还没写完」。
-    # 解释器路径也走参数（$4），不靠 $BASH：$BASH 在 sh 兼容模式下指向 /usr/bin/sh，脚本里的 bash 语法会挂
-    wrapper = '"$4" "$1" >>"$2" 2>&1 </dev/null; rc=$?; echo "$rc" >"$3"'
+    # 独立 Python 监督进程负责超时、取消、退出码及临时快照清理。
+    # Snapshot in the same directory keeps scripts sourcing ./_common.sh compatible.
+    path = os.path.join(os.path.dirname(original), ".s2job-" + job + os.path.splitext(original)[1])
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+    except OSError:
+        return fail(["无法在脚本目录创建执行快照，请检查目录权限和可用空间"], 1)
     kw = {}
     if os.name == "posix":
         kw["start_new_session"] = True   # 脚本不跟着控制台进程组一起被杀
     try:
-        p = subprocess.Popen([bash, "-c", wrapper, "s2job", _bash_path(path), _bash_path(log), _bash_path(rcf),
-                              _bash_path(bash)],
+        p = subprocess.Popen([sys.executable, os.path.join(HERE, "job_runner.py"), bash, _bash_path(path), log, rcf,
+                              str(timeout), os.path.dirname(original)],
                              cwd=os.path.dirname(path), env=env, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
     except OSError as e:
+        os.unlink(path)
         return fail(["无法启动 bash：%s（%s）" % (bash, e)], 127)
     try:
         with open(pidf, "w") as f:
@@ -557,8 +584,48 @@ def start_job(path):
     except OSError:
         pass
     with JOB_LOCK:
-        JOBS[job] = {"t": time.time(), "proc": p}
+        JOBS[job] = {"t": time.time(), "proc": p, "name": os.path.basename(original)}
+    s2security.atomic_text(os.path.join(JOBS_DIR, job + ".meta"), json.dumps({"name": os.path.basename(original), "timeout": timeout, "sha256": hashlib.sha256(content).hexdigest()}))
     return job
+
+
+SCRIPT_START_LOCK = threading.Lock()
+
+
+def inspect_script(name):
+    path = script_by_name(name)
+    if not path:
+        raise Problem("脚本不存在", 404)
+    with open(path, "rb") as stream:
+        content = stream.read(MAX_RUN_BYTES + 1)
+    if len(content) > MAX_RUN_BYTES:
+        raise Problem("脚本过大")
+    digest = hashlib.sha256(content).hexdigest()
+    preview = content[:65536].decode("utf-8", "replace")
+    with get_ops().store.db() as db:
+        old = db.execute("SELECT hash,content FROM scripts WHERE name=?", (name,)).fetchone()
+    return {"name": name, "sha256": digest, "size": len(content), "content": preview,
+            "source": "应用脚本库" if os.path.dirname(path) == SCRIPTS_DIR else "共享目录",
+            "changed": not old or old["hash"] != digest, "truncated": len(content) > 65536,
+            "diff": "\n".join(difflib.unified_diff((old["content"] if old else "").splitlines(), preview.splitlines(),
+                                                fromfile="上次执行", tofile="当前内容", lineterm=""))}
+
+
+def managed_jobs():
+    result = []
+    if not os.path.isdir(JOBS_DIR):
+        return result
+    for filename in sorted(os.listdir(JOBS_DIR))[-256:]:
+        identifier = filename.split(".")[0]
+        if not filename.endswith(".meta") or not JOB_ID_RE.fullmatch(identifier):
+            continue
+        try:
+            with open(os.path.join(JOBS_DIR, filename), encoding="utf-8") as stream:
+                metadata = json.load(stream)
+            result.append({"id": identifier, **metadata, **read_job(identifier)})
+        except (OSError, ValueError):
+            continue
+    return result
 
 
 def script_by_name(name):
@@ -625,14 +692,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <circle cx="32.5" cy="69" r="3.6" fill="#34e68c"/><circle cx="67.5" cy="69" r="3.6" fill="#34e68c"/></svg></span>
   <span class="name"><b class="org">NIX</b><em>fnOS-S2</em></span><span class="sub">硬件控制台</span></div>
  <h1>输入访问口令</h1>
- <p>这台设备设置了访问口令。口令正确后，这个浏览器会记住一年。</p>
+ <p>登录在当前标签页内有效，最长 12 小时。应用重启后需重新登录。</p>
+ <p class="err" id="login-error" role="alert" hidden></p>
  {{ERR}}
- <label for="tk">访问口令</label>
+ <label for="username">账号（使用原访问口令时留空）</label>
+ <input id="username" name="username" autocomplete="username" maxlength="32">
+ <label for="tk">访问口令 / 账号密码</label>
  <input id="tk" type="password" name="token" autofocus required maxlength="128"
         autocomplete="current-password" {{DIS}}>
  <input type="hidden" name="next" value="{{NEXT}}">
  <button type="submit" {{DIS}}>进入控制台</button>
-</form></body></html>"""
+</form><script src="/login.js" defer></script></body></html>"""
 
     def log_message(self, fmt, *args):
         """默认实现会打印完整 requestline，?token= 就跟着进日志了。
@@ -640,7 +710,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         return
 
     def log_request(self, code="-", size="-"):
-        """只记路径不记 query：口令可以走 ?token=，不能留在日志里。"""
+        """只记路径不记 query，避免旧链接中的口令进入日志。"""
         path = urllib.parse.urlsplit(self.path).path or "/"
         sys.stderr.write('[%s] "%s %s %s" %s %s\n' % (
             time.strftime("%F %T"), self.command, path, self.request_version, code, size))
@@ -648,6 +718,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
     # ---- helpers ----
     def _security_headers(self):
+        if self._cookie_token():
+            self.send_header("Set-Cookie", "s2token=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         # 注意：这里刻意不加 X-Frame-Options / frame-ancestors。
@@ -656,9 +728,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
         self.send_header("Content-Security-Policy",
                          "default-src 'self'; img-src 'self' data:; "
                          "style-src 'self' 'unsafe-inline'; script-src 'self'; "
-                         "connect-src 'self'")
+                         "connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'")
 
     def _json(self, obj, code=200):
+        if self.command == "POST" and urllib.parse.urlsplit(self.path).path.startswith("/api/"):
+            principal = self._principal()
+            get_ops().store.audit(urllib.parse.urlsplit(self.path).path + (":" + getattr(self, "_audit_op", "") if getattr(self, "_audit_op", "") else ""),
+                                  principal["name"] if principal else "anonymous", self._remote(), obj.get("ok", False))
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -896,33 +972,66 @@ button:disabled{opacity:.5;cursor:not-allowed}
                 return urllib.parse.unquote(part.split("=", 1)[1].strip())
         return ""
 
-    def _auth_ok(self):
-        if not TOKEN:
-            return True
-        cands = [self.headers.get("X-S2-Token", "") or "",
-                 (self._query().get("token") or [""])[0],
-                 self._cookie_token()]
-        cands = [c for c in cands if c]
-        # 逐个候选都完整比较，不短路
-        ok = False
-        for c in cands:
-            if self._tok_eq(c):
-                ok = True
-        # 什么凭据都没带不算「试错」（第一次打开页面就是这样），带了但不对才算
-        if cands:
+    def _session_token(self):
+        value = self.headers.get("Authorization", "")
+        return value[7:] if value.startswith("Bearer ") else ""
+
+    def _principal(self):
+        if not hasattr(self, "_principal_cached"):
+            self._principal_cached = self._resolve_principal()
+        return self._principal_cached
+
+    def _resolve_principal(self):
+        store = get_ops().store
+        token = self._session_token()
+        if token.startswith("s2k_"):
+            return store.key_principal(token)
+        if SESSIONS.valid(token):
+            subject = SESSIONS.subject(token)
+            if subject and subject.get("kind") == "user":
+                return store.current_user(subject)
+            return {"name": "owner", "kind": "owner", "role": "admin", "scopes": ROLES["admin"]}
+        explicit = self.headers.get("X-S2-Token", "")
+        if explicit and TOKEN:
+            ok = self._tok_eq(explicit)
             self._note_auth(ok)
-        return ok
+            if ok:
+                return {"name": "owner", "kind": "owner", "role": "admin", "scopes": ROLES["admin"]}
+        if token or explicit:
+            return None
+        if not TOKEN and not store.users_exist():
+            local = self._remote() in LOOPBACK
+            return {"name": "local" if local else "guest", "role": "admin" if local else "viewer",
+                    "kind": "local" if local else "guest", "scopes": ROLES["admin"] if local else ["read"]}
+        return None
+
+    def _auth_ok(self):
+        return self._principal() is not None
+
+    def _require_scope(self, scope):
+        principal = self._principal()
+        if principal and scope in principal.get("scopes", []):
+            return True
+        self.close_connection = True
+        self._json({"ok": False, "msg": "当前账号没有此操作权限"}, 403)
+        return False
 
     def _danger_ok(self, remote):
-        """高危接口的第二道门。
+        principal = self._principal()
+        return bool(principal and any(s in principal.get("scopes", []) for s in ("admin", "control", "scripts")))
 
-        脚本上传/执行、改端口这三条路径等于任意 root 命令执行，
-        不能因为「没配 TOKEN」就对整个局域网敞开。没配口令时只认本机；
-        配了口令后凭口令调用（X-S2-Token 头 / ?token= / s2token cookie 均可）。
-        """
-        if TOKEN:
-            return self._auth_ok()
-        return remote in LOOPBACK
+    def _write_origin_ok(self):
+        origin = self.headers.get("Origin")
+        if origin:
+            try:
+                parsed = urllib.parse.urlsplit(origin)
+                if (parsed.scheme not in ("http", "https") or parsed.username is not None
+                        or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
+                        or parsed.netloc.lower() != self.headers.get("Host", "").lower()):
+                    return False
+            except ValueError:
+                return False
+        return self.headers.get("Sec-Fetch-Site", "") not in ("cross-site", "same-site")
 
     @staticmethod
     def _safe_next(nxt):
@@ -932,43 +1041,15 @@ button:disabled{opacity:.5;cursor:not-allowed}
             return "/"
         return nxt
 
-    def _redirect_with_cookie(self, location, tok):
-        self.send_response(303)
-        self.send_header("Location", location)
-        self.send_header("Set-Cookie",
-                         "%s=%s; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax"
-                         % (COOKIE_NAME, urllib.parse.quote(tok)))
-        self.send_header("Content-Length", "0")
-        self.send_header("Cache-Control", "no-store")
-        self._security_headers()
-        self.end_headers()
-
-    def _bind_cookie(self, path):
-        """兼容旧用法：?token= 命中就换发 cookie，再跳回不带口令的地址。
-        新的登录页走 POST /login，不再把口令放进地址。"""
-        q = self._query()
-        tok = (q.get("token") or [""])[0]
-        if not TOKEN or not tok or self._locked() or not self._tok_eq(tok):
-            return False
-        q.pop("token", None)
-        qs = urllib.parse.urlencode({k: v[0] for k, v in q.items()})
-        self._redirect_with_cookie(path + ("?" + qs if qs else ""), tok)
-        return True
-
     def _login_page(self, bad=False, locked=False, code=200):
-        """配了口令之后，静态资源也要求鉴权 —— 但总得有个地方输入口令。
-        页面不含脚本，一个 POST 表单提交到 /login。
-        同时清掉浏览器里的旧 cookie：口令改过之后旧 cookie 每次轮询都会被当成一次试错，
-        不清的话没几分钟就把自己锁住了。"""
+        """公开登录页；login.js 将短期会话保存在当前来源的 sessionStorage。"""
         if locked:
             note = '<p class="err">口令错误次数太多，请 5 分钟后再试。</p>'
         elif bad:
             note = '<p class="err">口令不正确，请重新输入。</p>'
         else:
             note = ""
-        nxt = self._safe_next(urllib.parse.urlsplit(self.path).path)
-        if nxt == "/login":
-            nxt = "/"
+        nxt = "/"
         body = (self.LOGIN_PAGE.replace("{{ERR}}", note)
                 .replace("{{DIS}}", "disabled" if locked else "")
                 .replace("{{NEXT}}", html_escape(nxt))).encode("utf-8")
@@ -976,58 +1057,40 @@ button:disabled{opacity:.5;cursor:not-allowed}
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        if self._cookie_token():
-            self.send_header("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" % COOKIE_NAME)
         self._security_headers()
         self.end_headers()
         self.wfile.write(body)
 
     def _login_post(self):
-        """POST /login，表单字段 token / next。"""
-        if not TOKEN:
-            self.send_response(303)
-            self.send_header("Location", "/")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
         if self._locked():
-            self._login_page(locked=True, code=429)
-            return
-        te = (self.headers.get("Transfer-Encoding", "") or "").strip().lower()
-        try:
-            n = int(self.headers.get("Content-Length", 0) or 0)
-        except (TypeError, ValueError):
-            n = -1
-        if te not in ("", "identity") or n < 0 or n > 4096:
             self.close_connection = True
-            self._login_page(bad=True, code=400)
+            self._json({"ok": False, "msg": "口令错误次数太多，请 5 分钟后再试"}, 429)
             return
-        raw = self.rfile.read(n).decode("utf-8", "replace") if n else ""
-        form = urllib.parse.parse_qs(raw, keep_blank_values=True)
-        tok = (form.get("token") or [""])[0]
-        nxt = self._safe_next((form.get("next") or ["/"])[0])
-        ok = self._tok_eq(tok)
+        if self.headers.get("Content-Type", "").split(";")[0].lower() != "application/x-www-form-urlencoded":
+            self.close_connection = True
+            self._json({"ok": False, "msg": "请求格式不对"}, 415)
+            return
+        raw, err = self._raw_body(limit=4096)
+        if err:
+            self._json({"ok": False, "msg": "登录请求格式错误"}, err)
+            return
+        form = urllib.parse.parse_qs(raw.decode("utf-8", "replace"), keep_blank_values=True)
+        username = (form.get("username") or [""])[0]
+        password = (form.get("token") or [""])[0]
+        subject = get_ops().store.login(username, password) if username else None
+        owner = bool(not username and TOKEN and self._tok_eq(password))
+        anonymous = not username and not TOKEN and not get_ops().store.users_exist()
+        ok = bool(subject or owner or anonymous)
         self._note_auth(ok)
         if not ok:
-            self._login_page(bad=True, locked=self._locked(), code=401)
+            self._json({"ok": False, "msg": "账号或口令不正确"}, 401)
             return
-        audit("auth:login", {"ip": self._remote()}, self._remote(), True)
-        self._redirect_with_cookie(nxt, tok)
+        audit("auth:login", {"actor": username or "owner"}, self._remote(), True)
+        self._json({"ok": True, "session": "" if anonymous else SESSIONS.issue(subject), "next": "/"})
 
     def _auth_fail_json(self):
-        """API 401：顺手让浏览器丢掉旧 cookie，前端收到 401 会刷新页面去登录页。"""
-        body = json.dumps({"ok": False, "msg": "需要访问口令"}, ensure_ascii=False).encode("utf-8")
-        self.send_response(401)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        if self._cookie_token():
-            self.send_header("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" % COOKIE_NAME)
-        if self.close_connection:
-            self.send_header("Connection", "close")
-        self._security_headers()
-        self.end_headers()
-        self.wfile.write(body)
+        """API 401：前端清除会话并跳到登录页。"""
+        self._json({"ok": False, "msg": "需要访问口令"}, 401)
 
     def _static(self, path):
         if path == "/" or path == "":
@@ -1045,7 +1108,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
         # 以前「找不到就回落 index.html 并返回 200」，等于把 public/ 变成一个
         # 任何路径都答 200 的文件服务器：既分不清「真的不存在」和「首页」，
         # 也让 public/ 里任何被顺手扔进去的东西都自动对外可读。
-        if (not inside or not os.path.isfile(full)
+        if (rel not in ("index.html", "app.js", "style.css", "login.js", "manage.html", "manage.js", "manage.css")
+                or not inside or not os.path.isfile(full)
                 or not full.endswith(self.STATIC_EXT)):
             self.send_error(404)
             return
@@ -1148,22 +1212,22 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
     # ---- GET ----
     def do_GET(self):
+        if hasattr(self, "_principal_cached"):
+            del self._principal_cached
         raw_path = urllib.parse.urlsplit(self.path).path
         if not raw_path.startswith("/api/"):
-            if TOKEN and self._locked():
-                self._login_page(locked=True, code=429)
-                return
-            # 兼容旧链接：带着 ?token= 进来，先换成 cookie 再跳走，别让口令停在地址栏
-            if self._bind_cookie(raw_path):
-                return
-            # 配了口令之后页面本身也要鉴权，否则「设了密码」只是把 API 锁上，
-            # 页面结构、脚本、以及 public/ 里任何被顺手放进去的东西照样匿名可读。
-            if TOKEN and not self._auth_ok():
-                self._login_page(bad=bool((self._query().get("token") or [""])[0]))
+            if "token" in self._query():
+                self.send_response(303)
+                self.send_header("Location", "/login")
+                self.send_header("Content-Length", "0")
+                self._security_headers()
+                self.end_headers()
                 return
             if raw_path == "/login":
-                raw_path = "/"
-            self._static(raw_path)
+                self._login_page()
+            else:
+                # 只开放应用壳与明确列出的静态资源，设备数据全部经过 API 鉴权。
+                self._static(raw_path)
             return
         path = self._norm(raw_path)
         if self._locked():
@@ -1172,11 +1236,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
         if not self._auth_ok():
             self._auth_fail_json()
             return
+        if path.startswith("/api/ops/"):
+            self._ops_get(path[len("/api/ops/"):])
+            return
+        if not self._require_scope("scripts" if path.startswith("/api/script/") else "read"):
+            return
         q = self._query()
         if path == "/api/state":
             r = hw_call("status", {})
             # 页面据此决定重启 / 改端口这些按钮能不能点、该提示什么
-            r["access"] = {"token": bool(TOKEN), "danger": self._danger_ok(self._remote())}
+            r["access"] = {"token": bool(TOKEN or get_ops().store.users_exist()), "danger": self._danger_ok(self._remote()),
+                           "scopes": self._principal().get("scopes", []), "actor": self._principal()["name"]}
             self._json(r)
         elif path == "/api/sensor":
             # 轻量快照：前端 10 秒轮询走这里，不读配置、不扫脚本/模块目录
@@ -1199,6 +1269,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
         elif path == "/api/log":
             name = (q.get("name") or ["sata-led"])[0]
             self._json(hw_call("logs", {"name": name}))
+        elif path == "/api/script/inspect":
+            try:
+                self._json({"ok": True, "data": inspect_script((q.get("name") or [""])[0])})
+            except Problem as error:
+                self._json({"ok": False, "msg": str(error)}, error.status)
+        elif path == "/api/script/jobs":
+            self._json({"ok": True, "data": managed_jobs()})
         elif path == "/api/script/get":
             name = os.path.basename((q.get("name") or [""])[0])
             p = script_by_name(name)
@@ -1251,10 +1328,40 @@ button:disabled{opacity:.5;cursor:not-allowed}
         else:
             self._json({"ok": False, "msg": "未知接口"}, 404)
 
+    def _ops_get(self, route):
+        if not self._require_scope("read" if route in OPS_READ else "admin"):
+            return
+        try:
+            query = {key: value[0] for key, value in self._query().items()}
+            self._json({"ok": True, "data": get_ops().get(route, query, self._principal())})
+        except Problem as error:
+            self._json({"ok": False, "msg": str(error)}, error.status)
+        except (ValueError, OSError, TypeError):
+            self._json({"ok": False, "msg": "设备数据读取失败，请检查运行日志"}, 500)
+
+    def _ops_post(self, route, body):
+        if not self._require_scope("control" if route in OPS_CONTROL else "admin"):
+            return
+        principal = self._principal()
+        try:
+            result = get_ops().post(route, body, principal)
+            self._json({"ok": True, "data": result, "msg": "操作成功"})
+        except Problem as error:
+            self._json({"ok": False, "msg": str(error)}, error.status)
+        except (ValueError, OSError, TypeError):
+            self._json({"ok": False, "msg": "操作未完成，请检查配置与设备状态"}, 500)
+
     # ---- POST ----
     def do_POST(self):
+        if hasattr(self, "_principal_cached"):
+            del self._principal_cached
         path = self._norm(urllib.parse.urlsplit(self.path).path)
+        self._audit_op = ""
         remote = self._remote()
+        if not self._write_origin_ok():
+            self.close_connection = True
+            self._json({"ok": False, "msg": "请求来源不受信任，请从控制台操作"}, 403)
+            return
         if path == "/login":
             self._login_post()
             return
@@ -1265,6 +1372,19 @@ button:disabled{opacity:.5;cursor:not-allowed}
         if not self._auth_ok():
             self.close_connection = True
             self._auth_fail_json()
+            return
+        if self.headers.get("X-S2-Request") != "1":
+            self.close_connection = True
+            self._json({"ok": False, "msg": "请求缺少安全校验头，请刷新页面"}, 403)
+            return
+        if path == "/api/logout":
+            SESSIONS.revoke(self._session_token())
+            self.close_connection = True
+            self._json({"ok": True, "msg": "已退出登录"})
+            return
+        scope = None if path == "/api/hw" or path.startswith("/api/ops/") else (
+            "scripts" if path.startswith("/api/script/") else "admin" if path == "/api/restart" else "control")
+        if scope and not self._require_scope(scope):
             return
         # 高危接口：没配口令时只认本机，别把 root 命令执行挂在局域网上
         if path in DANGER_PATHS and not self._danger_ok(remote):
@@ -1282,29 +1402,56 @@ button:disabled{opacity:.5;cursor:not-allowed}
         if path == "/api/script/upload":
             self._script_upload(remote)
             return
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            self.close_connection = True
+            self._json({"ok": False, "msg": "请求必须使用 JSON 格式"}, 415)
+            return
         body, err = self._body()
         if err:
             self._json({"ok": False, "msg": "请求体过大" if err == 413 else "请求体格式错误"}, err)
             return
 
+        if path.startswith("/api/ops/"):
+            self._ops_post(path[len("/api/ops/"):], body)
+            return
         if path in ("/api/power/prepare", "/api/power"):
             self._power(path, body, remote)
             return
 
         if path == "/api/hw":
             op = body.get("op", "")
-            params = body.get("params", {}) or {}
+            params = body.get("params", {})
             # 电源操作只走 /api/power（确认码 + 防跨站），这个多路复用口不放行
             if op == "power":
                 self._json({"ok": False, "msg": "请在「控制 → 电源」里操作"}, 400)
                 return
             # 门禁是按 op 判的，不是按路径：/api/hw 是个多路复用口，
             # 里面既有只读的 status，也有能把自己关在门外的 set_port。
-            if op in DANGER_OPS and not self._danger_ok(remote):
+            if not isinstance(op, str) or not isinstance(params, dict):
+                self._json({"ok": False, "msg": "操作参数格式错误"}, 400)
+                return
+            if op not in READ_OPS and not self._danger_ok(remote):
                 audit("deny:hw:%s" % op, {"ip": remote}, remote, False)
                 self._json({"ok": False, "msg": DANGER_DENY_MSG}, 403)
                 return
+            scope = "read" if op in READ_OPS or op in ("schedule_info", "fan_guard_info") else (
+                "admin" if op in ("set_port", "config_apply", "config_snapshot", "config_validate") else "scripts" if op == "patch" else "control")
+            if not self._require_scope(scope):
+                return
+            tracked = op in ("set_fan", "set_led_override", "set_beep", "set_power_schedule", "set_fan_guard")
+            if tracked:
+                try:
+                    get_ops().version("修改前自动备份", self._principal()["name"])
+                except (Problem, ValueError, OSError, TypeError):
+                    self._json({"ok": False, "msg": "无法备份当前配置，尚未执行修改，请先检查配置文件"}, 503)
+                    return
+            self._audit_op = op
             r = hw_call(op, params)
+            if tracked and r.get("ok"):
+                try:
+                    get_ops().version("自动保存", self._principal()["name"])
+                except (Problem, ValueError, OSError, TypeError):
+                    r["msg"] = (r.get("msg") or "配置已生效") + "；版本记录保存失败，请检查存储空间"
             audit("hw:%s" % op, params, remote, r.get("ok"))
             self._json(r)
 
@@ -1384,9 +1531,47 @@ button:disabled{opacity:.5;cursor:not-allowed}
             if not p:
                 self._json({"ok": False, "msg": "脚本不存在"})
                 return
-            job = start_job(p)
-            audit("script:start", {"name": name}, remote, True)
-            self._json({"ok": True, "job": job, "name": os.path.basename(p)})
+            try:
+                with SCRIPT_START_LOCK:
+                    inspected = inspect_script(name)
+                    if body.get("sha256") != inspected["sha256"]:
+                        raise Problem("请先审查脚本内容并确认摘要", 409)
+                    active_jobs = [j for j in managed_jobs() if not j["done"]]
+                    if len(active_jobs) >= MAX_JOBS:
+                        raise Problem("正在运行的任务已达到上限", 409)
+                    if any(j["name"] == name for j in active_jobs):
+                        raise Problem("该脚本正在运行，不能重复启动", 409)
+                    from s2store import integer
+                    timeout = integer(body.get("timeout", 600), 10, 3600)
+                    job = start_job(p, timeout=timeout, expected_hash=inspected["sha256"])
+                    with get_ops().store.db() as db:
+                        db.execute("INSERT OR REPLACE INTO scripts VALUES (?,?,?)", (name, inspected["sha256"], inspected["content"]))
+                audit("script:start", {"name": name, "sha256": inspected["sha256"]}, remote, True)
+                self._json({"ok": True, "job": job, "name": name})
+            except Problem as error:
+                self._json({"ok": False, "msg": str(error)}, error.status)
+
+        elif path == "/api/script/cancel":
+            identifier = body.get("id", "")
+            job = next((j for j in managed_jobs() if j["id"] == identifier), None)
+            if not job or job["done"]:
+                self._json({"ok": False, "msg": "任务已结束或不存在"}, 409)
+                return
+            if os.name != "posix":
+                self._json({"ok": False, "msg": "任务组取消仅支持 Linux 设备"}, 400)
+                return
+            try:
+                with open(_job_files(identifier)[2]) as stream:
+                    pid = int(stream.read().strip())
+                # A persisted PID may have been reused; verify it still supervises this exact job.
+                with open("/proc/%d/cmdline" % pid, "rb") as stream:
+                    command = stream.read()
+                if b"job_runner.py" not in command or identifier.encode() not in command:
+                    raise ValueError("任务进程已变化")
+                os.kill(pid, signal.SIGTERM)
+                self._json({"ok": True, "msg": "已请求取消任务"})
+            except (OSError, ValueError):
+                self._json({"ok": False, "msg": "无法确认任务进程，未发送终止信号"}, 409)
 
         elif path == "/api/restart":
             port = body.get("port")
@@ -1425,6 +1610,7 @@ def main():
     if os.environ.get("S2_ALERTS", "1") != "0":
         _ALERT_WATCHER = alerts.Watcher(ALERTS, _alert_collect)
         _ALERT_WATCHER.start()
+    get_ops().start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     sys.stderr.write("S2 硬件控制台 监听 0.0.0.0:%d (root=%s)\n" % (PORT, hwctl.is_root()))
     if not TOKEN:

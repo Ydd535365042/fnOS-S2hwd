@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 Environment=S2_AGENT_PORT=8899
 Environment=S2_HWCTL_DIR=/var/apps/fnOS-S2/target/server
+Environment=S2_AGENT_KEY_FILE=/var/apps/fnOS-S2/etc/agent.key
+UMask=0077
 ExecStart=/usr/bin/python3 /usr/local/sbin/s2hw-agent.py
 Restart=always
 RestartSec=3

@@ -9,11 +9,11 @@ s2hw-agent —— 以 root 常驻的硬件操作代理（可选组件）
       原样转发过来，由它代执行。
 
 部署（在设备上以 root 执行）：
-    install -m 755 s2hw-agent.py /usr/local/sbin/s2hw-agent.py
-    install -m 644 s2hw-agent.service /etc/systemd/system/s2hw-agent.service
-    systemctl daemon-reload && systemctl enable --now s2hw-agent
+    bash /var/apps/fnOS-S2/target/agent/install-hw-agent.sh
+安装器生成 root:fnOS-S2、0640 的随机密钥；任何请求都必须携带该密钥。
 """
 import json
+import hmac
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,6 +29,7 @@ MAX_BODY = 64 * 1024
 
 try:
     import hwctl
+    import s2security
 except Exception as e:  # noqa
     hwctl = None
     IMPORT_ERR = str(e)
@@ -37,6 +38,12 @@ except Exception as e:  # noqa
 class H(BaseHTTPRequestHandler):
     # 只服务回环上的 server.py，一个连接一条请求就够，不复用也别复用得莫名其妙。
     protocol_version = "HTTP/1.0"
+    timeout = 15
+
+    def _authorized(self):
+        key = s2security.read_agent_key() if hwctl is not None else ""
+        supplied = self.headers.get("X-S2-Agent-Key", "")
+        return bool(key) and hmac.compare_digest(key.encode(), supplied.encode("utf-8"))
 
     def _json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -50,13 +57,26 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path.startswith("/ping"):
-            self._json({"ok": True, "root": os.geteuid() == 0,
-                        "hwctl": hwctl is not None})
+        if not self._authorized():
+            self._json({"ok": False, "msg": "代理认证失败"}, 401)
+            return
+        if self.path == "/ping":
+            self._json({"ok": True, "root": hwctl.is_root(),
+                        "hwctl": hwctl is not None, "auth": 1})
         else:
             self._json({"ok": False, "msg": "not found"}, 404)
 
     def do_POST(self):
+        if not self._authorized():
+            self._json({"ok": False, "msg": "代理认证失败"}, 401)
+            return
+        if self.path != "/hw":
+            self._json({"ok": False, "msg": "未知接口"}, 404)
+            return
+        if (self.headers.get("Origin") or self.headers.get("Transfer-Encoding")
+                or self.headers.get("Content-Type", "").split(";")[0].lower() != "application/json"):
+            self._json({"ok": False, "msg": "代理请求格式错误"}, 400)
+            return
         if hwctl is None:
             self._json({"ok": False, "msg": "hwctl 导入失败：%s" % IMPORT_ERR})
             return
@@ -73,10 +93,13 @@ class H(BaseHTTPRequestHandler):
         try:
             body = json.loads(self.rfile.read(n).decode("utf-8"))
         except Exception:
-            self._json({"ok": False, "msg": "请求体解析失败"})
+            self._json({"ok": False, "msg": "请求体解析失败"}, 400)
             return
         if not isinstance(body, dict):
             self._json({"ok": False, "msg": "请求体应为 JSON 对象"}, 400)
+            return
+        if not isinstance(body.get("op"), str) or not isinstance(body.get("params", {}), dict):
+            self._json({"ok": False, "msg": "操作参数格式错误"}, 400)
             return
         ok, data = hwctl.dispatch(body.get("op", ""), body.get("params", {}))
         if isinstance(data, str):
@@ -87,6 +110,13 @@ class H(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if hwctl is None:
+        sys.exit("硬件模块导入失败：" + IMPORT_ERR)
+    if "--init-key" in sys.argv:
+        s2security.init_agent_key()
+        sys.exit(0)
+    if not s2security.read_agent_key():
+        sys.exit("代理密钥缺失或权限不安全，请先以 root 运行 --init-key")
     if os.geteuid() != 0:
         sys.stderr.write("警告：非 root 运行，硬件写入会失败\n")
     sys.stderr.write("s2hw-agent 监听 127.0.0.1:%d\n" % PORT)

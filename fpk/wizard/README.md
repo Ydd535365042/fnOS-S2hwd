@@ -80,9 +80,10 @@ appcenter-cli start s2hwctl
 安装向导第二步可设置端口（默认 18899）、访问口令、是否安装开机灯光服务。
 
 > **装完想在手机 / 别的电脑上传 `.run` 模块，安装时必须启用访问口令。**
-> 未启用口令时，脚本上传 / 执行与改端口这三条高危接口只允许本机（loopback）调用。
+> 未启用口令时，所有硬件写操作、脚本上传 / 执行与配置修改只允许本机（loopback）调用。
 > 忘了设也不用重装：进「应用设置 → 配置」，在「设置新口令」填一个口令并保存
-> （应用自动重启），再用 `http://设备地址:端口/?token=你的口令` 打开一次绑定 Cookie 即可。
+> （应用自动重启），再打开控制台，在登录页输入口令即可。请勿把口令放进网址。
+> 登录会话仅保存在当前标签页，最长 12 小时；退出登录、服务重启或过期后需重新登录。
 > 配置页口令框**留空 = 保持现有口令不变**，填新值 = 启用 / 更新，
 > 勾选「清除访问口令」才关闭；只改端口不会误清口令。
 
@@ -108,10 +109,14 @@ appcenter-cli start s2hwctl
   页面会把 `{op, params}` 转发到 `http://127.0.0.1:8899` 代为执行：
 
 ```bash
-install -m 755 app/agent/s2hw-agent.py /usr/local/sbin/s2hw-agent.py
-install -m 644 app/agent/s2hw-agent.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now s2hw-agent
+bash /var/apps/fnOS-S2/target/agent/install-hw-agent.sh
 ```
+
+若安装路径没有 `target`，改用实际应用目录下的 `agent/install-hw-agent.sh`。
+安装器会先停止旧代理，生成 `etc/agent.key`（root:fnOS-S2、0640），并配置新服务的路径。
+Web 与代理通过 `X-S2-Agent-Key` 认证，其他本机用户不能再匿名调用代理。
+升级回调会迁移已安装的代理；迁移失败时保持旧代理停止并在 `var/server.log` 记录原因。
+默认 root 模式无需安装此可选代理。
 
 页面右上角徽章会显示当前是「root 直控」还是「应用用户（需代理）」。
 
