@@ -537,10 +537,19 @@ def start_job(path, timeout=600, expected_hash=None):
         raise Problem("脚本内容已改变或过大，请重新审查", 409)
     original = path
     log, rcf, pidf = _job_files(job)
+    metadata = {"name": os.path.basename(original), "timeout": timeout, "sha256": hashlib.sha256(content).hexdigest()}
+    log_created = False
     def fail(lines, rc):
-        # 没跑起来：只在内存里记一条结果（"rc" 键让 read_job 不去等外壳）
+        # Keep launch failures visible, including after the web server restarts.
         with JOB_LOCK:
-            JOBS[job] = {"t": time.time(), "pre": lines, "proc": None, "rc": rc}
+            JOBS[job] = {"t": time.time(), "pre": lines, "proc": None, "rc": rc, **metadata}
+        if log_created:
+            try:
+                s2security.atomic_text(log, "\n".join(lines) + "\n")
+                s2security.atomic_text(rcf, str(rc) + "\n")
+                s2security.atomic_text(os.path.join(JOBS_DIR, job + ".meta"), json.dumps(metadata))
+            except OSError:
+                pass  # The in-memory record still explains a full/unwritable job directory.
         return job
 
     try:
@@ -549,6 +558,7 @@ def start_job(path, timeout=600, expected_hash=None):
         os.chmod(JOBS_DIR, 0o700)
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
+        log_created = True
     except OSError as e:
         return fail(["无法创建任务日志：%s" % e], 1)
 
@@ -573,6 +583,11 @@ def start_job(path, timeout=600, expected_hash=None):
             stream.write(content)
     except OSError:
         return fail(["无法在脚本目录创建执行快照，请检查目录权限和可用空间"], 1)
+    try:
+        s2security.atomic_text(os.path.join(JOBS_DIR, job + ".meta"), json.dumps(metadata))
+    except OSError:
+        os.unlink(path)
+        return fail(["无法保存任务记录，尚未执行脚本，请检查任务目录权限和可用空间"], 1)
     kw = {}
     if os.name == "posix":
         kw["start_new_session"] = True   # 脚本不跟着控制台进程组一起被杀
@@ -590,8 +605,7 @@ def start_job(path, timeout=600, expected_hash=None):
     except OSError:
         pass
     with JOB_LOCK:
-        JOBS[job] = {"t": time.time(), "proc": p, "name": os.path.basename(original)}
-    s2security.atomic_text(os.path.join(JOBS_DIR, job + ".meta"), json.dumps({"name": os.path.basename(original), "timeout": timeout, "sha256": hashlib.sha256(content).hexdigest()}))
+        JOBS[job] = {"t": time.time(), "proc": p, **metadata}
     return job
 
 
@@ -630,9 +644,11 @@ def inspect_script(name, factory=False):
 
 def managed_jobs():
     result = []
-    if not os.path.isdir(JOBS_DIR):
-        return result
-    for filename in sorted(os.listdir(JOBS_DIR))[-256:]:
+    try:
+        filenames = sorted(os.listdir(JOBS_DIR))[-256:] if not os.path.islink(JOBS_DIR) and os.path.isdir(JOBS_DIR) else []
+    except OSError:
+        filenames = []
+    for filename in filenames:
         identifier = filename.split(".")[0]
         if not filename.endswith(".meta") or not JOB_ID_RE.fullmatch(identifier):
             continue
@@ -642,6 +658,12 @@ def managed_jobs():
             result.append({"id": identifier, **metadata, **read_job(identifier)})
         except (OSError, ValueError):
             continue
+    seen = {item["id"] for item in result}
+    with JOB_LOCK:
+        memory = list(JOBS.items())
+    for identifier, item in memory:
+        if identifier not in seen and item.get("name"):
+            result.append({"id": identifier, "name": item["name"], "timeout": item.get("timeout", 600), **read_job(identifier)})
     return result
 
 

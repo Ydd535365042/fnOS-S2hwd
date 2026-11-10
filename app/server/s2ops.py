@@ -93,6 +93,9 @@ class Operations:
         self.last_error = ""
         self.last_sample = 0
         self.fleet_lock = threading.Lock()
+        self.fleet_state_lock = threading.Lock()
+        self.fleet_revision = 0
+        self.delivery_lock = threading.Lock()
         self.fleet_cache = None
         self.fleet_at = 0
         self.history_enabled = self.store.get("history_enabled", False) is True
@@ -239,8 +242,11 @@ class Operations:
             config.update(url=body["url"], secret=str(body.get("secret") or retained)[:512])
         else:
             for key in ("host", "username", "sender", "recipient"):
-                value = str(body.get(key, "")).strip()
-                if not value or len(value) > 254 or "\n" in value or "\r" in value:
+                raw = body.get(key, "")
+                if not isinstance(raw, str) or "\n" in raw or "\r" in raw:
+                    raise Problem("邮件服务器、账号、发件人和收件人不能为空或包含换行")
+                value = raw.strip()
+                if not value or len(value) > 254:
                     raise Problem("邮件服务器、账号、发件人和收件人不能为空或包含换行")
                 config[key] = value
             retained = old.get("password", "") if config["host"] == old.get("host") and config["username"] == old.get("username") else ""
@@ -287,6 +293,14 @@ class Operations:
                 smtp.send_message(message)
 
     def deliver_pending(self):
+        if not self.delivery_lock.acquire(blocking=False):
+            return
+        try:
+            self._deliver_pending()
+        finally:
+            self.delivery_lock.release()
+
+    def _deliver_pending(self):
         config = self.store.get("notifications", {})
         if not config.get("enabled"):
             return
@@ -342,24 +356,38 @@ class Operations:
             if not isinstance(token, str) or not token.startswith("s2k_") or len(token) > 128:
                 raise Problem("请提供目标设备签发的只读访问密钥")
             db.execute("INSERT OR REPLACE INTO devices VALUES (?,?,?,?)", (identifier, label, body["url"].rstrip("/"), token))
-        self.fleet_cache = None
+        self.invalidate_fleet()
         return {"id": identifier}
+
+    def invalidate_fleet(self):
+        with self.fleet_state_lock:
+            self.fleet_revision += 1
+            self.fleet_cache = None
 
     def devices(self):
         with self.store.db() as db:
             return [dict(r) for r in db.execute("SELECT id,label,url FROM devices ORDER BY label")]
 
     def fleet(self):
-        if self.fleet_cache is not None and self.clock() - self.fleet_at < 15:
-            return self.fleet_cache
-        if not self.fleet_lock.acquire(blocking=False):
-            if self.fleet_cache is not None:
+        with self.fleet_state_lock:
+            if self.fleet_cache is not None and self.clock() - self.fleet_at < 15:
                 return self.fleet_cache
+        if not self.fleet_lock.acquire(blocking=False):
+            with self.fleet_state_lock:
+                if self.fleet_cache is not None:
+                    return self.fleet_cache
             raise Problem("正在检查设备，请稍后刷新", 503)
         try:
-            self.fleet_cache = self._probe_fleet()
-            self.fleet_at = self.clock()
-            return self.fleet_cache
+            for _ in range(2):
+                with self.fleet_state_lock:
+                    revision = self.fleet_revision
+                results = self._probe_fleet()
+                with self.fleet_state_lock:
+                    if revision == self.fleet_revision:
+                        self.fleet_cache = results
+                        self.fleet_at = self.clock()
+                        return results
+            raise Problem("设备列表已变化，请刷新后重试", 409)
         finally:
             self.fleet_lock.release()
 
@@ -373,7 +401,9 @@ class Operations:
                 headers = {"Authorization": "Bearer " + device["token"]}
                 state = self.network(device["url"] + "/api/sensor", headers)
                 alerts = self.network(device["url"] + "/api/alerts", headers)
-                if not state.get("ok") or not alerts.get("ok"):
+                if (not isinstance(state, dict) or not isinstance(alerts, dict)
+                        or state.get("ok") is not True or alerts.get("ok") is not True
+                        or not isinstance(state.get("data"), dict) or not isinstance(alerts.get("data"), dict)):
                     raise Problem("目标设备拒绝请求")
                 result.update(online=True, sensor=state.get("data"), alerts=alerts.get("data"))
             except (OSError, ValueError, http.client.HTTPException):
@@ -463,7 +493,7 @@ class Operations:
         elif route == "devices/delete":
             with self.store.db() as db:
                 db.execute("DELETE FROM devices WHERE id=?", (body.get("id"),))
-            self.fleet_cache = None
+            self.invalidate_fleet()
         else:
             raise Problem("未知运维接口", 404)
         return {"saved": True}

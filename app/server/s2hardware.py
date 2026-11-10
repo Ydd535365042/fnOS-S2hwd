@@ -83,17 +83,41 @@ def set_schedule(hw, body):
     helper = os.environ.get("S2_SCHEDULE_HELPER", "/usr/local/sbin/s2_schedule.py")
     if (config["weekdays"] != list(range(7)) or config["skip_dates"] or config["maintenance_until"]) and not os.path.isfile(helper):
         return False, "周计划执行组件尚未部署，请先部署新版硬件配置"
-    hw.write_kv(hw.APP_SCHED_CONF, {"ENABLED": "1" if config["enabled"] else "0",
-        "SHUTDOWN_TIME": config["shutdown_time"], "BOOT_TIME": config["boot_time"],
-        "WEEKDAYS": ",".join(map(str, config["weekdays"])), "SKIP_DATES": ",".join(config["skip_dates"]),
-        "MAINTENANCE_UNTIL": str(config["maintenance_until"])})
-    if hw.NATIVE_ENABLED:
-        rc, output = hw.run(["systemctl", "enable" if config["enabled"] else "disable", "s2-power-schedule.service"], timeout=30)
-        if rc: return False, "计划已保存，但开机计划服务设置失败"
-    if os.path.exists(hw.SCHED_APPLY_BIN):
-        rc, output = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
-        if rc:
-            return False, "计划已保存，但系统应用失败，请检查计划服务"
+    saved = None
+    if os.path.isfile(hw.APP_SCHED_CONF):
+        with open(hw.APP_SCHED_CONF, encoding="utf-8") as stream:
+            saved = stream.read()
+    try:
+        hw.write_kv(hw.APP_SCHED_CONF, {"ENABLED": "1" if config["enabled"] else "0",
+            "SHUTDOWN_TIME": config["shutdown_time"], "BOOT_TIME": config["boot_time"],
+            "WEEKDAYS": ",".join(map(str, config["weekdays"])), "SKIP_DATES": ",".join(config["skip_dates"]),
+            "MAINTENANCE_UNTIL": str(config["maintenance_until"])})
+        if hw.NATIVE_ENABLED:
+            rc, _ = hw.run(["systemctl", "enable" if config["enabled"] else "disable", "s2-power-schedule.service"], timeout=30)
+            if rc:
+                raise ValueError("开机计划服务设置失败")
+        if os.path.exists(hw.SCHED_APPLY_BIN):
+            rc, _ = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
+            if rc:
+                raise ValueError("系统应用失败")
+    except (OSError, ValueError):
+        try:
+            if saved is None:
+                if os.path.exists(hw.APP_SCHED_CONF):
+                    os.unlink(hw.APP_SCHED_CONF)
+            else:
+                s2security.atomic_text(hw.APP_SCHED_CONF, saved)
+            hw._KV_CACHE.pop(hw.APP_SCHED_CONF, None)
+        except OSError:
+            return False, "计划应用失败，原配置恢复失败，请检查配置目录权限和计划服务"
+        restored = True
+        if hw.NATIVE_ENABLED:
+            rc, _ = hw.run(["systemctl", "enable" if current["enabled"] else "disable", "s2-power-schedule.service"], timeout=30)
+            restored = restored and rc == 0
+        if os.path.exists(hw.SCHED_APPLY_BIN):
+            rc, _ = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
+            restored = restored and rc == 0
+        return False, "计划应用失败，已恢复原配置" + ("" if restored else "；系统服务恢复仍失败，请检查计划服务与 RTC")
     return True, "计划已保存" + ("；当前未检测到 RTC 唤醒" if config["boot_time"] and not hw.rtc_wake_supported() else "")
 
 
