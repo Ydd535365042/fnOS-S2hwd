@@ -7,16 +7,22 @@
     document.documentElement.dataset.theme = preference === "auto" ? (media.matches ? "dark" : "light") : preference;
   };
   syncTheme(); media.addEventListener("change", syncTheme);
-  const $ = id => document.getElementById(id);
-  const workspace = $("workspace");
-  let principal, current = "health", restore = null;
-  const date = value => value ? new Date(value * 1000).toLocaleString() : "—";
-  const text = (tag, value, className) => { const el = document.createElement(tag); el.textContent = value; if (className) el.className = className; return el; };
-  const allowed = scope => principal?.scopes?.includes(scope);
-  function status(message, error = false) { $("status").textContent = message; $("status").className = error ? "error" : ""; $("status").hidden = !message; }
+  const $ = id => document.getElementById(id), workspace = $("workspace");
+  let principal, current = "backups", generation = 0, fieldId = 0, mutating = 0;
+  const allowed = scope => !scope || principal?.scopes?.includes(scope);
+  const text = (tag, value = "", className = "") => { const el = document.createElement(tag); el.textContent = value; if (className) el.className = className; return el; };
+  const date = value => value ? new Date(value * 1000).toLocaleString("zh-CN", {hour12: false}) : "—";
+  const when = value => { const el = text("time", date(value)); if (value) el.dateTime = new Date(value * 1000).toISOString(); return el; };
+  const badge = (label, kind = "") => text("span", label, "badge " + kind);
+  const actorName = value => ({"owner": "访问口令", "passphrase": "访问口令", "local": "设备本机", "guest": "只读访问"}[value] || value);
+  function status(message, error = false) {
+    const el = $("status"); el.textContent = message; el.className = error ? "error" : ""; el.hidden = !message;
+    if (error && message) el.focus({preventScroll: false});
+  }
   async function api(path, body) {
-    const token = window.S2Auth.get();
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), path === "restore" ? 180000 : path.endsWith("fleet") ? 90000 : 45000);
+    const token = window.S2Auth.get(), controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), path === "restore" ? 180000 : path === "fleet" ? 90000 : 45000);
+    if (body !== undefined) mutating++;
     try {
       const response = await fetch(path.startsWith("/api/") ? path : "/api/ops/" + path, {
         method: body === undefined ? "GET" : "POST", credentials: "omit", cache: "no-store", signal: controller.signal,
@@ -24,47 +30,76 @@
         body: body === undefined ? undefined : JSON.stringify(body)
       });
       if (response.status === 401) { window.S2Auth.clear(); location.replace("/login"); throw new Error("请重新登录"); }
-      let result; try { result = await response.json(); } catch (_) { throw new Error("设备响应无法识别"); }
-      if (!response.ok || result?.ok !== true) throw new Error(result?.msg || "操作失败");
+      let result; try { result = await response.json(); } catch (_) { throw new Error("设备响应无法识别，请稍后重试"); }
+      if (!response.ok || result?.ok !== true) throw new Error(result?.msg || "操作失败，请重试");
       return result.data === undefined ? result : result.data;
     } catch (error) {
       if (error.name === "AbortError") throw new Error("设备响应超时，请刷新确认操作结果");
+      if (error instanceof TypeError) throw new Error("连接中断，请检查设备连接后重试");
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); if (body !== undefined) mutating--; }
   }
-  function button(label, action, scope, className) {
-    const el = text("button", label, "btn" + (className ? " " + className : "")); el.type = "button"; el.disabled = !!scope && !allowed(scope);
-    el.addEventListener("click", async () => {
-      el.disabled = true;
-      status("");
+  function button(label, action, scope, className = "") {
+    const el = text("button", label, "btn " + className); el.type = "button"; el.disabled = !allowed(scope);
+    if (el.disabled) el.title = "当前访问方式没有此操作权限";
+    el.addEventListener("click", async event => {
+      event.preventDefault();
+      if (el.disabled) return;
+      el.disabled = true; el.setAttribute("aria-busy", "true"); status("");
       try { await action(); } catch (error) { status(error.message || "操作失败", true); }
-      finally { el.disabled = !!scope && !allowed(scope); }
+      finally { el.disabled = !allowed(scope); el.removeAttribute("aria-busy"); }
     });
     return el;
   }
-  function card(title, parent = workspace) { const el = text("section", "", "card"); el.append(text("h2", title)); parent.append(el); return el; }
-  function fields(parent) { const el = text("div", "", "fields"); parent.append(el); return el; }
-  function field(parent, label, value = "", type = "text", options) {
+  function card(parent, title, description = "", wide = false) {
+    const el = text("section", "", "card" + (wide ? " wide" : "")), head = text("div", "", "panel-head");
+    head.append(text("h2", title)); if (description) head.append(text("p", description)); el.append(head); parent.append(el); return el;
+  }
+  function fields(parent, className = "fields") { const el = text("div", "", className); parent.append(el); return el; }
+  function field(parent, label, value = "", type = "text", options = [], props = {}) {
     const wrap = text("label", "", "field" + (type === "checkbox" ? " check" : ""));
     const el = document.createElement(type === "select" ? "select" : type === "textarea" ? "textarea" : "input");
     if (type === "select") for (const [v, title] of options) { const item = text("option", title); item.value = v; el.append(item); }
     else if (type !== "textarea") el.type = type;
     if (type === "checkbox") el.checked = !!value; else el.value = value ?? "";
-    el.setAttribute("aria-label", label); wrap.append(text("span", label), el); parent.append(wrap); return el;
+    el.id = "ops-field-" + (++fieldId); wrap.htmlFor = el.id; el.setAttribute("aria-label", label); Object.assign(el, props);
+    wrap.append(text("span", label), el); parent.append(wrap); return el;
   }
-  function actions(parent, ...buttons) { const row = text("div", "", "actions"); row.append(...buttons); parent.append(row); }
-  function table(parent, columns, rows) {
-    if (!rows.length) { parent.append(text("p", "暂无记录", "empty")); return; }
-    const wrap = text("div", "", "table-scroll"), table = document.createElement("table"), head = document.createElement("tr");
-    for (const column of columns) head.append(text("th", column[0]));
-    const thead = document.createElement("thead"); thead.append(head); table.append(thead);
-    const body = document.createElement("tbody");
-    for (const row of rows) { const tr = document.createElement("tr"); for (const [, render] of columns) { const td = document.createElement("td"), v = render(row); if (v instanceof Node) td.append(v); else td.textContent = v ?? "—"; tr.append(td); } body.append(tr); }
-    table.append(body); wrap.append(table); parent.append(wrap);
+  function numberField(parent, label, value, min, max) { return field(parent, label, value, "number", [], {min: String(min), max: String(max), step: "1", required: true}); }
+  function toggle(parent, label, value) { return field(fields(parent, "switch-row"), label, value, "checkbox"); }
+  function form(parent) {
+    const el = document.createElement("form"); parent.append(el);
+    el.addEventListener("submit", e => { e.preventDefault(); el.querySelector('[data-submit="true"]')?.click(); }); return el;
+  }
+  function actions(parent, ...buttons) { const row = fields(parent, "actions"); row.append(...buttons); return row; }
+  function save(parent, label, action, scope) {
+    if (!allowed(scope)) { parent.querySelectorAll("input,select,textarea").forEach(el => { el.disabled = true; }); note(parent, "当前为只读访问，可查看设置。"); }
+    const el = button(label, async () => { if (parent.reportValidity()) await action(); }, scope, "primary");
+    el.dataset.submit = "true"; el.type = "submit"; actions(parent, el); return el;
+  }
+  function note(parent, value, className = "note") { parent.append(text("p", value, className)); }
+  function empty(parent, title, detail) { const el = fields(parent, "empty"); el.append(text("strong", title), text("p", detail)); }
+  function stats(parent, rows) { const list = text("dl", "", "stat-list"); for (const [label, value] of rows) { const row = text("div"); const dd = text("dd"); dd.append(value instanceof Node ? value : text("span", value)); row.append(text("dt", label), dd); list.append(row); } parent.append(list); }
+  function table(parent, columns, rows, blank = ["暂无记录", "新的记录会在这里显示。"] ) {
+    if (!rows.length) { empty(parent, ...blank); return; }
+    const wrap = fields(parent, "table-scroll"), grid = document.createElement("table"), head = document.createElement("tr");
+    for (const [label] of columns) { const th = text("th", label); th.scope = "col"; head.append(th); }
+    const thead = document.createElement("thead"); thead.append(head); grid.append(thead);
+    const body = document.createElement("tbody"); grid.append(body); wrap.append(grid);
+    let page = 0; const size = 10, total = Math.ceil(rows.length / size);
+    const pager = text("div", "", "pagination"), position = text("span"), previous = text("button", "上一页", "btn"), next = text("button", "下一页", "btn");
+    previous.type = next.type = "button"; position.setAttribute("aria-live", "polite");
+    const draw = () => {
+      body.replaceChildren();
+      for (const row of rows.slice(page * size, (page + 1) * size)) { const tr = document.createElement("tr"); for (const [label, render] of columns) { const td = document.createElement("td"), value = render(row); td.dataset.label = label; if (value instanceof Node) td.append(value); else td.append(text("span", value ?? "—")); tr.append(td); } body.append(tr); }
+      position.textContent = `${page + 1} / ${total} 页 · 共 ${rows.length} 条`; previous.disabled = page === 0; next.disabled = page + 1 === total;
+    };
+    previous.onclick = () => { if (page > 0) { page--; draw(); } }; next.onclick = () => { if (page + 1 < total) { page++; draw(); } };
+    if (total > 1) { pager.append(position, previous, next); parent.append(pager); } draw();
   }
   function download(filename, value, mime = "application/json") {
     const blob = new Blob([typeof value === "string" ? value : JSON.stringify(value, null, 2)], {type: mime + ";charset=utf-8"});
-    const url = URL.createObjectURL(blob), link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const url = URL.createObjectURL(blob), link = text("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   function csv(rows) {
     if (!rows.length) return "";
@@ -72,166 +107,172 @@
     const escape = value => { let s = typeof value === "object" ? JSON.stringify(value) : String(value ?? ""); if (/^[=+@\-\t\r]/.test(s)) s = "'" + s; return '"' + s.replaceAll('"', '""') + '"'; };
     return "\ufeff" + [keys, ...rows.map(row => keys.map(k => row[k]))].map(row => row.map(escape).join(",")).join("\r\n");
   }
-  function chart(parent, points, key, label) {
-    parent.append(text("h3", label));
-    const valid = points.filter(p => typeof p[key] === "number" && Number.isFinite(p[key]));
-    if (!valid.length) { parent.append(text("p", "还没有有效采样。后台每 30 秒记录一次。", "empty")); return; }
-    const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 700 220"); svg.setAttribute("class", "chart"); svg.setAttribute("role", "img"); svg.setAttribute("aria-label", label + "历史趋势");
-    const max = Math.max(1, ...valid.map(p => p[key])) * 1.1, first = points[0].ts, span = Math.max(1, points.at(-1).ts - first);
-    const line = document.createElementNS(ns, "polyline"); line.setAttribute("points", valid.map(p => `${45 + (p.ts - first) / span * 640},${185 - p[key] / max * 160}`).join(" ")); svg.append(line);
-    for (const [x, y, value] of [[5, 25, max.toFixed(1)], [15, 185, "0"], [45, 210, date(first)], [480, 210, date(points.at(-1).ts)]]) { const t = document.createElementNS(ns, "text"); t.setAttribute("x", x); t.setAttribute("y", y); t.textContent = value; svg.append(t); }
-    parent.append(svg);
+  function modal(title, message) {
+    const previous = document.activeElement, dialog = text("dialog", "", "ops-review"), head = fields(dialog, "dialog-head"), body = fields(dialog, "dialog-body"), foot = fields(dialog, "dialog-foot");
+    const heading = text("h2", title); heading.id = "ops-dialog-" + (++fieldId); head.append(heading); dialog.setAttribute("aria-labelledby", heading.id);
+    if (message) body.append(text("p", message, "dialog-message"));
+    const close = () => { dialog.close(); dialog.remove(); if (previous?.isConnected) previous.focus(); };
+    dialog.addEventListener("cancel", e => { e.preventDefault(); if (dialog.dataset.busy !== "true") close(); });
+    document.body.append(dialog); dialog.showModal(); return {dialog, body, foot, close};
   }
-  async function health() {
-    const [overview, report, integration] = await Promise.all([api("overview"), api("report"), api("integration").catch(error => ({backend:"unknown", native:{detail:error.message}, dtb:{readable:false,detail:error.message}}))]);
-    const cards = text("div", "", "cards"); workspace.append(cards);
-    const summary = card("设备健康", cards);
-    summary.append(text("div", report.alerts.active.length ? report.alerts.active.length + " 项待关注" : "当前无活动告警", "metric"));
-    summary.append(text("p", "最近采样：" + date(overview.last_sample), "muted"));
-    if (overview.last_error) summary.append(text("p", overview.last_error, "bad"));
-    if (overview.maintenance.active) summary.append(text("p", "维护中，自动恢复时间：" + date(overview.maintenance.until), "pill"));
-    actions(summary, button("下载健康报告", () => download("s2-health-report.json", report)));
-    const problems = card("活动告警", cards);
-    table(problems, [["问题", r => r.title], ["级别", r => r.level], ["开始时间", r => date(r.since)]], report.alerts.active);
-    const tools = card("设备树与原生硬件", cards); tools.classList.add("wide");
-    const dtb = integration.dtb || {}, native = integration.native || {}, units = integration.services || {};
-    const dtbState = dtb.reboot_required ? "待重启（" + (dtb.selected_new ? "升级" : "回滚") + "）" : dtb.running_new ? (dtb.prepared ? "已加载新版" : "下次引导需检查") : "尚未升级";
-    const lightState = integration.lights_enabled ? (units["fnos-s2-led-boot"] === "failed" ? "启动失败" : "已启用") : "未启用（选装）";
-    const nativeState = integration.backend === "native" ? (units["fnos-s2-native"] === "active" ? "运行中（标准接口）" : units["fnos-s2-native"] === "activating" ? "正在启动" : "服务未运行") : ({legacy:"旧控制兼容模式", unavailable:"尚未就绪"}[integration.backend] || "待检查");
-    table(tools, [["功能", r => r.name], ["状态", r => r.state], ["说明", r => r.detail]], [
-      {name: "S2 设备树", state: dtb.readable === false ? "待检查" : dtbState, detail: dtb.detail || dtb.model || "尚未读取板型"},
-      {name: "原生硬件控制", state: nativeState, detail: native.detail || ""},
-      {name: "电源灯美化", state: lightState, detail: "开机闪灯、关机混色与提示音；不修改引导配置"}
-    ]);
-    const review = name => { location.href = "/?review_factory=" + encodeURIComponent(name); };
-    const rollback = button("回滚上次 DTB 升级", () => review("50-回滚上次DTB升级.sh"), "scripts");
-    if (!integration.rollback_available) { rollback.disabled = true; rollback.title = "暂无本项目创建的 DTB 升级备份"; }
-    actions(tools, button("检查硬件", () => review("00-硬件自检.sh"), "scripts"),
-      button("审查并升级 DTB", () => review("20-升级S2设备树.sh"), "scripts"), rollback,
-      button(integration.lights_enabled ? "停用电源灯美化" : "安装电源灯美化", () => review(integration.lights_enabled ? "40-停用电源灯美化.sh" : "30-安装电源灯美化.sh"), "scripts"));
-    tools.append(text("p", "操作会先进入内置工具审查；修改引导前需输入 yes 确认，不会自动重启。", "note"));
-    const diagnostics = card("故障诊断", cards); diagnostics.classList.add("wide");
-    table(diagnostics, [["检查", r => r.title], ["结果", r => text("span", r.ok ? "正常" : "待检查", r.ok ? "good" : "bad")], ["说明", r => r.detail], ["操作", r => r.repair ? button("重启服务", async () => { await api("diagnostics/repair", {service: r.repair}); status("已请求修复，正在重新检查"); await render(); }, "control") : "—"]], report.diagnostics);
+  async function confirm(title, message, label, action, dangerous = false) {
+    const m = modal(title, message), error = text("p", "", "dialog-error"); error.setAttribute("role", "alert"); m.body.append(error);
+    const cancel = button("取消", m.close), apply = button(label, async () => {
+      cancel.disabled = true; m.dialog.dataset.busy = "true"; error.textContent = "";
+      try { await action(); m.close(); } catch (e) { error.textContent = e.message; } finally { cancel.disabled = false; m.dialog.dataset.busy = "false"; }
+    }, null, dangerous ? "danger" : "primary");
+    m.foot.append(cancel, apply); cancel.focus(); return m;
   }
-  async function history() {
-    const panel = card("历史监控"); const row = fields(panel);
-    const hours = field(row, "时间范围", "24", "select", [["24", "最近 24 小时"], ["168", "最近 7 天"], ["720", "最近 30 天"], ["8760", "最近一年"]]);
-    const metric = field(row, "指标", "cpu_temp", "select", [["cpu_temp", "CPU 温度 ℃"], ["hdd_max_temp", "最高硬盘温度 ℃"], ["fan_duty", "风扇占空比 %"], ["cpu_pct", "CPU 使用率 %"], ["mem_pct", "内存使用率 %"]]);
-    const plot = text("div", ""); panel.append(plot); let points = [];
-    const refresh = async () => { points = await api("history?hours=" + hours.value); plot.replaceChildren(); chart(plot, points, metric.value, metric.selectedOptions[0].textContent); };
-    hours.onchange = () => refresh().catch(e => status(e.message, true)); metric.onchange = () => { plot.replaceChildren(); chart(plot, points, metric.value, metric.selectedOptions[0].textContent); };
-    actions(panel, button("导出 CSV", () => download("s2-history.csv", csv(points), "text/csv")));
-    await refresh();
-    const overview = await api("overview");
-    panel.append(text("p", overview.history_enabled ? "历史记录已开启，会定期写入存储。" : "历史记录已暂停，已有数据保留。", "note"));
+  async function previewRestore(body) {
+    const restore = await api("restore/preview", body);
+    const m = await confirm("恢复配置", "请核对变更。恢复前会自动备份当前配置，访问口令与密钥不受影响。", "确认恢复", async () => { await api("restore", restore); await render(); status("配置已恢复，原配置已自动备份"); });
+    m.body.prepend(text("pre", restore.diff || "配置没有变化"));
+  }
+  async function backups(root) {
+    const versions = await api("versions");
+    const create = card(root, "创建备份", "将当前配置保存为一个可恢复的版本。"), f = form(create);
+    const label = field(f, "备份说明", "", "text", [], {placeholder: "例如：调整风扇前", maxLength: 80});
+    note(f, "包含风扇、灯光、蜂鸣、定时计划和保护策略。", "callout");
+    save(f, "创建并下载备份", async () => { const data = await api("backup", {label: label.value.trim() || "手动备份"}); download("s2-config-" + data.id + ".json", data); await render(); status("备份已保存，下载已开始"); }, "admin");
+    const imported = card(root, "从文件恢复", "先比较差异，再决定是否应用。"), importForm = form(imported);
+    const file = field(importForm, "选择备份文件", "", "file", [], {accept: ".json,application/json", required: true});
+    note(importForm, "支持本应用导出的 JSON 文件，最大 64 KB。凭据和监控记录不包含在备份中。", "callout");
+    save(importForm, "预览配置差异", async () => { const selected = file.files[0]; if (!selected || selected.size > 65536) throw new Error("请选择不超过 64 KB 的备份文件"); let data; try { data = JSON.parse(await selected.text()); } catch (_) { throw new Error("文件不是有效的 JSON，请重新选择备份"); } if (data.format !== "s2-config-v1") throw new Error("这不是本应用的配置备份"); await previewRestore({config: data.config}); }, "admin");
+    const history = card(root, "配置版本", "手动备份和配置变更都会保留记录。", true);
+    table(history, [["保存时间", r => when(r.ts)], ["说明", r => r.label], ["操作身份", r => actorName(r.actor)], ["操作", r => button("比较并回退", () => previewRestore({id: r.id}), "admin")]], versions, ["还没有配置版本", "创建一次备份，或保存配置后，版本会出现在这里。"]);
+  }
+  async function schedule(root) {
+    const [data, overview] = await Promise.all([api("schedule"), api("overview")]);
+    const panel = card(root, "每周执行规则", "为概览页的定时开关机补充执行日期。"), f = form(panel);
+    note(f, `当前计划${data.enabled ? "已开启" : "已关闭"} · 关机 ${data.shutdown_time || "未设置"} · 开机 ${data.boot_time || "未设置"}。时间和总开关在概览页调整。`, "callout");
+    const group = fields(f, "weekdays"); group.setAttribute("role", "group"); group.setAttribute("aria-label", "执行星期");
+    const checks = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((day, i) => field(group, day, data.weekdays.includes(i), "checkbox"));
+    const skips = field(f, "跳过日期（可选）", data.skip_dates.join("\n"), "textarea", [], {placeholder: "2026-12-01\n2026-12-02"});
+    note(f, "每行一个 YYYY-MM-DD 日期，最多 64 天。按设备时区 " + data.timezone + " 执行。");
+    save(f, "保存执行规则", async () => {
+      const weekdays = checks.flatMap((c, i) => c.checked ? [i] : []), skip_dates = [...new Set(skips.value.split(/[\n,，]/).map(s => s.trim()).filter(Boolean))];
+      if (!weekdays.length) throw new Error("请至少选择一个执行日");
+      if (skip_dates.length > 64 || skip_dates.some(d => !/^\d{4}-\d{2}-\d{2}$/.test(d) || !Number.isFinite(Date.parse(d)) || new Date(d).toISOString().slice(0,10) !== d)) throw new Error("跳过日期格式有误，请使用 YYYY-MM-DD，最多 64 天");
+      await api("schedule", {weekdays, skip_dates}); await render(); status("执行规则已保存，开关机时间保持原设置");
+    }, "control");
+    const state = overview.maintenance, maintenance = card(root, "临时维护", "维护结束后自动恢复计划。"), mf = form(maintenance);
+    note(mf, state.active ? "维护中，至 " + date(state.until) + (state.reason ? " · " + state.reason : "") : "当前未开启维护，计划正常执行。", "callout");
+    const period = numberField(mf, "维护时长（分钟）", 60, 1, 1440), reason = field(mf, "维护说明", "", "text", [], {placeholder: "例如：更换硬盘", maxLength: 200});
+    note(mf, "暂停期间的定时开关机与服务异常推送；温度、磁盘告警和风扇保护继续工作。最长 24 小时。");
+    save(mf, state.active ? "更新维护时间" : "开始维护", async () => { await api("maintenance", {minutes: Number(period.value), reason: reason.value.trim() || "设备维护"}); await render(); status("维护时间已更新"); }, "control");
+    if (state.active) actions(mf, button("立即结束维护", () => confirm("结束维护", "结束后恢复定时计划与服务异常推送。", "结束维护", async () => { await api("maintenance", {minutes: 0}); await render(); status("维护已结束"); }), "control"));
+    const next = card(root, "下一次执行", "设备端计算的执行时间，保存规则后更新。", true);
+    stats(next, [["下次关机", data.next_shutdown?.local || "未安排"], ["下次开机", data.next_boot?.local || "未安排"]]);
+    if (!data.rtc_wake) note(next, "未检测到 RTC 唤醒接口，设备可能无法按计划自动开机。");
+  }
+  async function guard(root) {
+    const data = await api("guard"), panel = card(root, "保护策略", "达到保护条件时，风扇将切换到全速。"), f = form(panel);
+    const enabled = toggle(f, "启用风扇保护", data.enabled), row = fields(f);
+    const cpu = numberField(row, "CPU 温度阈值（℃）", data.cpu_limit, 50, 85), disk = numberField(row, "硬盘温度阈值（℃）", data.disk_limit, 40, 60), count = numberField(f, "连续异常采样次数", data.fail_samples, 1, 10);
+    note(f, "CPU：50–85℃ · 硬盘：40–60℃ · 采样：1–10 次。");
+    save(f, "保存保护策略", async () => { await api("guard", {enabled: enabled.checked, cpu_limit: Number(cpu.value), disk_limit: Number(disk.value), fail_samples: Number(count.value)}); await render(); status("风扇保护策略已保存"); }, "control");
+    const explanation = card(root, "运行状态", "保护策略由设备服务执行，关闭网页后依然有效。");
+    stats(explanation, [["保护状态", badge(data.active ? "保护中" : data.enabled ? "正常监测" : "未启用", data.active ? "bad" : data.enabled ? "good" : "")], ["触发条件", "CPU 温度失效 / 温度连续超限"], ["保护动作", "风扇全速运行"], ["恢复条件", "低于阈值 3℃，连续两次正常"]]);
+    if (data.active && data.reason) note(explanation, data.reason, "callout warn");
+    note(explanation, "风扇曲线与日常调速在控制页设置；这里仅管理异常保护。");
+  }
+  async function notifications(root) {
+    const data = await api("notifications"), c = data.config, panel = card(root, "告警渠道", "仅推送启用后的新告警。"), f = form(panel);
+    const enabled = toggle(f, "启用告警推送", c.enabled), kind = field(f, "推送方式", c.kind, "select", [["webhook", "Webhook"], ["email", "邮件（STARTTLS）"]]);
+    const webhook = fields(f, "channel-fields"), url = field(webhook, "Webhook 地址", c.url || "", "url", [], {placeholder: "https://example.com/webhook"}), secret = field(webhook, "Bearer 凭据", "", "password", [], {placeholder: c.has_secret ? "已保存，留空保留" : "可选", autoComplete: "new-password"});
+    const email = fields(f, "channel-fields"), inputs = {};
+    for (const [key, label, type, value] of [["host", "SMTP 服务器", "text", c.host], ["port", "端口", "number", c.port || 587], ["username", "邮箱账号", "text", c.username], ["password", "邮箱授权码 / 密码", "password", ""], ["sender", "发件地址", "email", c.sender], ["recipient", "收件地址", "email", c.recipient]]) inputs[key] = field(email, label, value, type);
+    Object.assign(inputs.port, {min: "1", max: "65535", step: "1"}); inputs.password.placeholder = c.has_password ? "已保存，留空保留" : "填写邮箱授权码"; inputs.password.autocomplete = "new-password";
+    const change = () => { const mail = kind.value === "email"; webhook.hidden = mail; email.hidden = !mail; for (const input of webhook.querySelectorAll("input")) input.disabled = mail; for (const input of email.querySelectorAll("input")) input.disabled = !mail; url.required = !mail; for (const key of ["host", "port", "username", "sender", "recipient"]) inputs[key].required = mail; };
+    kind.onchange = change; enabled.onchange = change; change();
+    note(f, "更换地址、服务器或邮箱账号时，请重新填写对应凭据。邮件服务器需支持 STARTTLS。");
+    save(f, "保存推送设置", async () => { const body = {enabled: enabled.checked, kind: kind.value}; if (kind.value === "webhook") Object.assign(body, {url: url.value.trim(), secret: secret.value}); else for (const [key, input] of Object.entries(inputs)) body[key] = key === "port" ? Number(input.value) : input.value; await api("notifications", body); await render(); status("告警推送设置已保存"); }, "admin");
+    const delivery = card(root, "投递记录", "失败最多重试 4 次，结果保留在这里。");
+    table(delivery, [["时间", r => when(r.ts)], ["状态", r => badge(({sent: "已发送", pending: "等待重试", failed: "失败", suppressed: "维护期间抑制"})[r.status] || r.status, r.status === "sent" ? "good" : r.status === "failed" ? "bad" : "")], ["尝试", r => r.attempts + " 次"], ["说明", r => r.error || "—"]], data.deliveries, ["还没有投递记录", "设置渠道后，新告警的投递结果会显示在这里。"]);
+  }
+  async function audit(root) {
+    const panel = card(root, "操作记录", "查看最近 500 条符合条件的操作。", true), f = form(panel), filters = fields(f, "filter-row");
+    const actor = field(filters, "操作身份", "", "text", [], {placeholder: "输入身份关键词"}), action = field(filters, "操作动作", "", "text", [], {placeholder: "例如：backup、script"}), results = fields(panel, "results"); let records = [], searchId = 0;
+    const exportButton = button("导出 CSV", () => download("s2-audit.csv", csv(records), "text/csv"));
+    const search = async () => { const id = ++searchId; const rows = await api("audit?actor=" + encodeURIComponent(actor.value.trim()) + "&action=" + encodeURIComponent(action.value.trim())); if (id !== searchId) return; records = rows; results.replaceChildren(); table(results, [["时间", r => when(r.ts)], ["操作身份", r => actorName(r.actor)], ["来源", r => r.ip], ["动作", r => r.action], ["结果", r => badge(r.ok ? "成功" : "失败", r.ok ? "good" : "bad")]], records, ["没有匹配的操作", "调整筛选条件，或完成一次配置操作后再查看。"]); exportButton.disabled = !records.length; };
+    const searchButton = button("查询", search, null, "primary"); searchButton.dataset.submit = "true"; searchButton.type = "submit";
+    actions(filters, searchButton, button("重置", async () => { actor.value = ""; action.value = ""; await search(); })); actions(panel, exportButton); await search();
+  }
+  async function keys(root) {
+    const rows = await api("keys"), panel = card(root, "创建访问密钥", "供自动化程序使用，与网页口令登录相互独立。"), f = form(panel);
+    const row = fields(f), label = field(row, "用途名称", "", "text", [], {required: true, maxLength: 80, placeholder: "例如：客厅 NAS 监控"}), days = numberField(row, "有效天数", 30, 1, 365);
+    const permissions = fields(f, "scope-options"), labels = {read: "读取状态", control: "控制硬件", scripts: "执行脚本", admin: "管理设备"};
+    const scopes = Object.entries(labels).map(([scope, title], i) => [scope, field(permissions, title, i === 0, "checkbox")]);
+    note(f, "只授予需要的权限。多设备监控只需“读取状态”，管理权限不会自动包含其他权限。");
+    save(f, "创建密钥", async () => {
+      const selected = scopes.filter(([, el]) => el.checked).map(([scope]) => scope); if (!selected.length) throw new Error("请至少选择一项权限");
+      const data = await api("keys", {label: label.value.trim(), days: Number(days.value), scopes: selected}); await render();
+      const m = modal("密钥已创建", "完整密钥只显示这一次，请复制保存后再关闭。"), value = text("pre", data.token, "secret-value"); value.tabIndex = 0; m.body.append(value);
+      const hint = text("p", "", "note"); m.body.append(hint);
+      m.foot.append(button("复制密钥", async () => { try { await navigator.clipboard.writeText(data.token); hint.textContent = "已复制到剪贴板"; } catch (_) { const range = document.createRange(); range.selectNodeContents(value); const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range); hint.textContent = "已选中密钥，请按 Ctrl+C 或长按复制"; } }), button("已保存，关闭", m.close, null, "primary"));
+      status("密钥已创建，列表已更新");
+    }, "admin");
+    const help = card(root, "使用说明", "每个用途使用独立密钥，便于撤销和排查。");
+    stats(help, [["显示次数", "仅创建时一次"], ["到期处理", "自动失效"], ["撤销后", "立即停止访问"]]); note(help, "网页仍只使用访问口令登录，登录记忆不受这里的密钥有效期影响。");
+    const list = card(root, "已创建的密钥", "撤销后无法恢复，需要重新创建。", true);
+    table(list, [["用途", r => r.label], ["权限", r => r.scopes.map(s => labels[s] || s).join("、")], ["状态", r => badge(r.revoked ? "已撤销" : r.expires <= Date.now()/1000 ? "已过期" : "有效", !r.revoked && r.expires > Date.now()/1000 ? "good" : "")], ["到期时间", r => when(r.expires)], ["最近使用", r => when(r.last_used)], ["操作", r => r.revoked ? "—" : button("撤销", () => confirm("撤销访问密钥", `“${r.label}”关联的程序将立即失去访问权限。`, "确认撤销", async () => { await api("keys/revoke", {id: r.id}); await render(); status("密钥已撤销"); }, true), "admin")]], rows, ["尚未创建密钥", "为监控或自动化程序创建专用密钥后，可在这里管理。"]);
+  }
+  async function devices(root) {
+    const states = await api("fleet"), panel = card(root, "设备状态", "汇总已登记设备的只读状态，最多 20 台。", true);
     if (allowed("admin")) {
-      const retention = card("历史数据保留");
-      const enabled = field(retention, "记录历史数据", overview.history_enabled ? "on" : "off", "select", [["off", "关闭（减少后台写盘）"], ["on", "开启"]]);
-      const days = field(retention, "保留天数（1–365）", overview.retention_days, "number");
-      retention.append(text("p", "需要硬盘休眠时请关闭记录，或将运维数据放在 SSD/eMMC。关闭不会删除已有数据。", "note"));
-      actions(retention, button("保存保留期限", async () => { await api("retention", {days: Number(days.value), enabled: enabled.value === "on"}); await render(); status("历史记录设置已更新"); }, "admin"));
+      const details = text("details"); details.append(text("summary", "添加设备")); panel.append(details); const f = form(details), row = fields(f);
+      const label = field(row, "设备名称", "", "text", [], {required: true, maxLength: 80, placeholder: "例如：书房 S2"}), url = field(row, "控制台地址", "", "url", [], {required: true, placeholder: "http://192.168.1.10:18899"}), token = field(f, "目标设备只读密钥", "", "password", [], {required: true, autoComplete: "new-password"});
+      note(f, "在目标设备的“访问密钥”中创建仅有读取权限的密钥。凭据只保存在当前设备服务端。");
+      save(f, "添加设备", async () => { const parsed = new URL(url.value); if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("请填写 HTTP 或 HTTPS 控制台地址，不要在地址中包含口令"); await api("devices", {label: label.value.trim(), url: url.value.trim(), token: token.value}); token.value = ""; await render(); status("设备已添加"); }, "admin");
+      note(panel, "点击设备名称可打开对应控制台。");
     }
+    table(panel, [["设备", r => { const box = text("div"), link = text("a", r.label, "device-link"); try { const u = new URL(r.url); if (["http:", "https:"].includes(u.protocol)) { link.href = u.href; link.target = "_blank"; link.rel = "noopener noreferrer"; } } catch (_) {} box.append(link, text("span", r.url, "subtext")); return box; }], ["连接", r => { const box = text("div"); box.append(badge(r.online ? "在线" : "离线", r.online ? "good" : "bad")); if (!r.online && r.error) box.append(text("span", r.error, "subtext")); return box; }], ["CPU 温度", r => r.sensor?.cpu_temp != null ? r.sensor.cpu_temp + " ℃" : "—"], ["活动告警", r => r.online ? r.alerts?.active?.length ?? 0 : "—"], ["检查时间", r => when(r.checked_at)], ["操作", r => allowed("admin") ? button("移除", () => confirm("移除设备", `仅从监控列表移除“${r.label}”，不会修改目标设备。`, "确认移除", async () => { await api("devices/delete", {id: r.id}); await render(); status("设备已移除"); }, true), "admin") : "—"]], states, ["还没有添加设备", "展开“添加设备”，填写控制台地址和只读密钥。"]);
   }
-  async function disks() {
-    const panel = card("磁盘健康趋势"), selector = field(panel, "磁盘", "", "select", []), content = text("div", ""); panel.append(content);
-    const draw = async identity => {
-      const data = await api("disks" + (identity ? "?identity=" + encodeURIComponent(identity) : ""));
-      if (!selector.options.length) for (const device of data.devices) { const option = text("option", device.identity); option.value = device.identity; selector.append(option); }
-      content.replaceChildren(); table(content, [["指标", r => r.metric], ["最早值", r => r.before], ["最新值", r => r.after], ["变化", r => r.delta]], data.changes);
-      content.append(text("p", "采样复用 SMART 缓存，不主动唤醒休眠盘；增量仅表示观测变化。", "note"));
-      table(content, [["时间", r => date(r.ts)], ["设备", r => r.name], ["SMART", r => text("pre", JSON.stringify(r.smart, null, 2))]], data.points.slice(-30).reverse());
-      actions(content, button("下载磁盘记录", () => download("s2-disk-history.json", data)));
-    };
-    selector.onchange = () => draw(selector.value).catch(e => status(e.message, true)); await draw("");
+  async function jobs(root) {
+    const rows = await api("/api/script/jobs"), panel = card(root, "任务记录", "这里查看执行结果与取消任务；脚本管理和运行统一在控制页。", true), filters = fields(panel, "filter-row single");
+    const filter = field(filters, "任务状态", "all", "select", [["all", "全部任务"], ["running", "运行中"], ["success", "执行成功"], ["failed", "执行失败"]]), results = fields(panel, "results");
+    const draw = () => { results.replaceChildren(); const selected = rows.filter(r => filter.value === "all" || (filter.value === "running" ? !r.done : filter.value === "success" ? r.done && r.rc === 0 : r.done && r.rc !== 0));
+      table(results, [["脚本", r => r.name], ["状态", r => badge(!r.done ? "运行中" : r.rc === 0 ? "执行成功" : "执行失败 · " + r.rc, !r.done ? "info" : r.rc === 0 ? "good" : "bad")], ["超时限制", r => r.timeout + " 秒"], ["操作", r => { const group = text("div", "", "actions compact"); group.append(button("查看输出", () => { const m = modal(r.name, r.done ? "任务已结束，退出码 " + r.rc : "运行中的任务；关闭后刷新列表可获取最新输出。"); m.body.append(text("pre", (r.lines || []).join("\n") || "任务尚未产生输出")); m.foot.append(button("关闭", m.close)); })); if (!r.done) group.append(button("取消任务", () => confirm("取消任务", `将终止“${r.name}”的执行。已完成的系统改动不会自动撤销。`, "确认取消", async () => { await api("/api/script/cancel", {id: r.id}); await render(); status("已请求取消任务，请刷新查看最终状态"); }, true), "scripts")); return group; }]], selected, [rows.length ? "没有符合条件的任务" : "还没有执行记录", rows.length ? "选择其他状态查看任务。" : "在控制页运行脚本后，可在这里查看结果。"]);
+    }; filter.onchange = draw; draw();
   }
-  async function previewRestore(body) { restore = await api("restore/preview", body); $("review-diff").textContent = restore.diff || "配置没有变化"; $("review").showModal(); }
-  async function backups() {
-    const panel = card("配置备份与恢复"), label = field(panel, "备份说明", "手动备份");
-    panel.append(text("p", "包含风扇、灯光、蜂鸣、计划和风扇保护。访问口令、访问密钥和通知凭据不会导出。", "note"));
-    const file = field(panel, "导入备份文件", "", "file"); file.accept = ".json,application/json";
-    actions(panel, button("创建并下载备份", async () => { const data = await api("backup", {label: label.value}); download("s2-config-" + data.id + ".json", data); status("备份已保存"); await render(); }, "admin", "primary"),
-      button("预览导入差异", async () => { const selected = file.files[0]; if (!selected || selected.size > 65536) throw new Error("请选择不超过 64 KB 的备份 JSON 文件"); const data = JSON.parse(await selected.text()); if (data.format !== "s2-config-v1") throw new Error("不是本应用的配置备份"); await previewRestore({config: data.config}); }, "admin"));
-    const versions = card("配置修改历史"); table(versions, [["时间", r => date(r.ts)], ["操作身份", r => r.actor], ["说明", r => r.label], ["操作", r => button("比较并回退", () => previewRestore({id: r.id}), "admin")]], await api("versions"));
-  }
-  async function schedule() {
-    const data = await api("schedule"), panel = card("每周定时计划"), row = fields(panel);
-    const enabled = field(row, "启用计划", data.enabled, "checkbox");
-    const off = field(row, "关机时间（留空不关机）", data.shutdown_time, "time"), boot = field(row, "开机时间（留空不开机）", data.boot_time, "time");
-    const weekdays = text("div", "", "actions"); panel.append(weekdays);
-    const checks = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"].map((day, index) => field(weekdays, day, data.weekdays.includes(index), "checkbox"));
-    const skips = field(panel, "临时跳过日期（每行 YYYY-MM-DD，最多 64 天）", data.skip_dates.join("\n"), "textarea");
-    panel.append(text("p", `按设备时区 ${data.timezone} 执行。下次关机：${data.next_shutdown?.local || "未安排"}；下次开机：${data.next_boot?.local || "未安排"}`, "note"));
-    if (!data.rtc_wake) panel.append(text("p", "未检测到 RTC 唤醒接口，保存开机时间不代表设备具备自动开机能力。", "note"));
-    actions(panel, button("保存周计划", async () => { await api("schedule", {enabled: enabled.checked, shutdown_time: off.value, boot_time: boot.value, weekdays: checks.map((c, i) => c.checked ? i : -1).filter(i => i >= 0), skip_dates: skips.value.split(/[\n,]/).map(s => s.trim()).filter(Boolean)}); status("计划已保存"); await render(); }, "control", "primary"));
-    const maintenance = card("维护模式"), state = (await api("overview")).maintenance;
-    maintenance.append(text("p", state.active ? "维护至 " + date(state.until) + " · " + state.reason : "当前未处于维护模式"));
-    maintenance.append(text("p", "暂停维护期内的预定开关机与服务异常推送，到期自动恢复；温度、硬盘告警和风扇保护继续工作。", "note"));
-    const period = field(maintenance, "维护时长（分钟，最多 1440）", "60", "number"), reason = field(maintenance, "维护原因", "设备维护");
-    actions(maintenance, button("开始维护", async () => { await api("maintenance", {minutes: Number(period.value), reason: reason.value}); status("维护模式已启用"); await render(); }, "control"), button("立即结束维护", async () => { await api("maintenance", {minutes: 0}); status("维护模式已结束"); await render(); }, "control"));
-  }
-  async function guard() {
-    const data = await api("guard"), panel = card("风扇保护策略");
-    panel.append(text("p", data.active ? "保护中：" + data.reason : "当前未触发保护", data.active ? "bad" : "good"));
-    panel.append(text("p", "CPU 传感器失效或温度连续超限时切到全速。温度低于阈值 3℃ 且连续两次正常后恢复温控。策略由设备风扇服务执行。", "note"));
-    const row = fields(panel), enabled = field(row, "启用保护", data.enabled, "checkbox"), cpu = field(row, "CPU 阈值（50–85℃）", data.cpu_limit, "number"), disk = field(row, "硬盘阈值（40–60℃）", data.disk_limit, "number"), count = field(row, "连续异常采样次数（1–10）", data.fail_samples, "number");
-    actions(panel, button("保存保护策略", async () => { await api("guard", {enabled: enabled.checked, cpu_limit: Number(cpu.value), disk_limit: Number(disk.value), fail_samples: Number(count.value)}); status("保护策略已保存"); await render(); }, "control", "primary"));
-  }
-  async function notifications() {
-    const data = await api("notifications"), c = data.config, panel = card("外部告警通知"), row = fields(panel);
-    const enabled = field(row, "启用通知", c.enabled, "checkbox"), kind = field(row, "通知方式", c.kind, "select", [["webhook", "Webhook"], ["email", "邮件（STARTTLS）"]]);
-    const webhook = fields(panel), url = field(webhook, "Webhook 地址", c.url || "", "url"), secret = field(webhook, "Bearer 凭据（留空保留原值）", "", "password"); secret.placeholder = c.has_secret ? "已设置" : "可选";
-    const email = fields(panel), inputs = {};
-    for (const [key, label, type, value] of [["host", "SMTP 服务器", "text", c.host], ["port", "端口", "number", c.port || 587], ["username", "邮箱账号", "text", c.username], ["password", "密码（留空保留）", "password", ""], ["sender", "发件地址", "email", c.sender], ["recipient", "收件地址", "email", c.recipient]]) inputs[key] = field(email, label, value, type);
-    const toggle = () => { webhook.hidden = kind.value !== "webhook"; email.hidden = kind.value !== "email"; }; kind.onchange = toggle; toggle();
-    panel.append(text("p", "启用后只推送新告警。失败最多重试 4 次。邮件连接必须支持 STARTTLS；更换地址或账号时请重新填写凭据。", "note"));
-    actions(panel, button("保存通知设置", async () => { const body = {enabled: enabled.checked, kind: kind.value}; if (kind.value === "webhook") Object.assign(body, {url: url.value, secret: secret.value}); else { for (const [key, input] of Object.entries(inputs)) body[key] = key === "port" ? Number(input.value) : input.value; } await api("notifications", body); status("通知设置已保存"); await render(); }, "admin", "primary"));
-    const deliveries = card("投递记录"); table(deliveries, [["时间", r => date(r.ts)], ["状态", r => ({sent: "已发送", pending: "等待重试", failed: "失败", suppressed: "维护期间抑制"})[r.status]], ["尝试次数", r => r.attempts], ["说明", r => r.error]], data.deliveries);
-  }
-  async function audit() {
-    const panel = card("操作审计"), row = fields(panel), actor = field(row, "操作身份筛选"), action = field(row, "动作筛选"), results = text("div", ""); let records = [];
-    const search = async () => { records = await api("audit?actor=" + encodeURIComponent(actor.value) + "&action=" + encodeURIComponent(action.value)); results.replaceChildren(); table(results, [["时间", r => date(r.ts)], ["操作身份", r => r.actor], ["来源", r => r.ip], ["动作", r => r.action], ["结果", r => r.ok ? "成功" : "失败"]], records); };
-    actions(panel, button("查询", search), button("导出 CSV", () => download("s2-audit.csv", csv(records), "text/csv"))); panel.append(results); await search();
-  }
-  async function keys() {
-    const panel = card("自动化访问密钥"), row = fields(panel), label = field(row, "用途名称"), days = field(row, "有效天数（1–365）", "30", "number"), permissions = fields(panel);
-    const scopes = ["read", "control", "scripts", "admin"].map((scope, i) => [scope, field(permissions, ["读取状态", "控制硬件", "执行脚本", "管理设备"][i], i === 0, "checkbox")]);
-    panel.append(text("p", "密钥只在创建时显示一次。请按用途选择权限，多设备监控只需读取状态。", "note"));
-    const result = text("pre", ""); result.hidden = true; panel.append(result);
-    actions(panel, button("创建密钥", async () => { const data = await api("keys", {label: label.value, days: Number(days.value), scopes: scopes.filter(([, el]) => el.checked).map(([scope]) => scope)}); result.textContent = data.token; result.hidden = false; status("密钥已创建，请立即复制保存"); }, "admin", "primary"));
-    const list = card("密钥列表"); table(list, [["用途", r => r.label], ["权限", r => r.scopes.join(", ")], ["到期", r => date(r.expires)], ["最近使用", r => date(r.last_used)], ["操作", r => r.revoked ? "已撤销" : button("撤销", async () => { await api("keys/revoke", {id: r.id}); status("密钥已撤销"); await render(); }, "admin")]], await api("keys"));
-  }
-  async function devices() {
-    const panel = card("设备列表"); panel.append(text("p", "登记目标设备的控制台地址与只读密钥；监控最多 20 台设备。远程凭据只保存在当前设备服务端。", "note"));
-    if (allowed("admin")) {
-      const row = fields(panel), label = field(row, "设备名称"), url = field(row, "控制台地址（建议 HTTPS）", "", "url"), token = field(row, "目标设备只读密钥", "", "password");
-      actions(panel, button("添加设备", async () => { await api("devices", {label: label.value, url: url.value, token: token.value}); token.value = ""; status("设备已添加"); await render(); }, "admin"));
-    }
-    const list = card("多设备状态"), states = await api("fleet");
-    table(list, [["设备", r => { const link = text("a", r.label); link.href = r.url; link.target = "_blank"; link.rel = "noopener noreferrer"; return link; }], ["连接", r => r.online ? "在线" : r.error], ["CPU 温度", r => r.sensor?.cpu_temp ?? "—"], ["活动告警", r => r.alerts?.active?.length ?? "—"], ["检查时间", r => date(r.checked_at)], ["管理", r => allowed("admin") ? button("移除", async () => { await api("devices/delete", {id: r.id}); await render(); }, "admin") : "—"]], states);
-  }
-  async function jobs() {
-    const panel = card("脚本任务"); panel.append(text("p", "从硬件控制台审查脚本内容后执行。同一脚本不能重复启动，任务超时自动终止。", "note"));
-    const rows = await api("/api/script/jobs"); table(panel, [["脚本", r => r.name], ["状态", r => r.done ? "已结束，退出码 " + r.rc : "运行中"], ["超时", r => r.timeout + " 秒"], ["操作", r => { const div = text("div", "", "actions"); div.append(button("查看输出", () => { const d = document.createElement("dialog"); d.className = "ops-review"; d.append(text("h2", r.name), text("pre", r.lines.join("\n")), button("关闭", () => { d.close(); d.remove(); })); document.body.append(d); d.showModal(); })); if (!r.done) div.append(button("取消任务", async () => { await api("/api/script/cancel", {id: r.id}); status("已请求取消，请稍后刷新"); }, "scripts")); return div; }]], rows);
-  }
-  const pages = {health: ["设备健康", health, "read"], history: ["历史监控", history, "read"], disks: ["磁盘趋势", disks, "read"], backups: ["备份与版本", backups, "admin"], schedule: ["计划与维护", schedule, "read"], guard: ["风扇保护", guard, "read"], notifications: ["告警推送", notifications, "admin"], audit: ["操作审计", audit, "admin"], keys: ["访问密钥", keys, "admin"], devices: ["多设备", devices, "read"], jobs: ["脚本任务", jobs, "scripts"]};
-  let loading = false;
+  const pages = {
+    backups: ["备份与版本", "保留配置，变更前有据可查。", backups, "admin"],
+    schedule: ["计划与维护", "安排执行日期，为设备维护留出时间。", schedule, "read"],
+    guard: ["风扇保护", "设置异常阈值，让设备在高温时主动保护。", guard, "read"],
+    notifications: ["告警推送", "把需要关注的设备异常发送到你的通知渠道。", notifications, "admin"],
+    audit: ["操作审计", "查清谁在什么时候做了什么。", audit, "admin"],
+    keys: ["访问密钥", "为监控与自动化分配独立的访问权限。", keys, "admin"],
+    devices: ["多设备", "集中查看其他设备的连接与告警状态。", devices, "read"],
+    jobs: ["脚本任务", "查看脚本输出，跟进执行结果。", jobs, "scripts"]
+  };
   async function render() {
-    if (loading) return;
-    loading = true; $("refresh").disabled = true; workspace.replaceChildren(); $("page-title").textContent = pages[current][0];
-    document.querySelectorAll("#navigation button").forEach(b => b.setAttribute("aria-current", b.dataset.page === current ? "page" : "false"));
-    try { await pages[current][1](); } catch (error) { status(error.message, true); }
-    finally { loading = false; $("refresh").disabled = false; }
+    const id = ++generation, page = pages[current], root = text("div", "", "ops-view");
+    $("refresh").disabled = true; workspace.setAttribute("aria-busy", "true"); workspace.replaceChildren(text("p", "正在读取设备数据…", "loading"));
+    $("page-title").textContent = page[0]; $("page-description").textContent = page[1]; document.title = page[0] + " · fnOS-S2 运维";
+    document.querySelectorAll("#navigation button").forEach(b => { if (b.dataset.page === current) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
+    try { await page[2](root); if (id === generation) workspace.replaceChildren(root); }
+    catch (error) { if (id === generation) { workspace.replaceChildren(); empty(workspace, "暂时无法读取数据", error.message); actions(workspace, button("重新加载", render)); status(error.message, true); } }
+    finally { if (id === generation) { workspace.setAttribute("aria-busy", "false"); $("refresh").disabled = false; } }
   }
-  $("refresh").onclick = () => render();
-  $("review-cancel").onclick = () => $("review").close();
-  $("review-apply").onclick = async () => { $("review-apply").disabled = true; try { await api("restore", restore); $("review").close(); status("配置已恢复"); await render(); } catch (error) { status(error.message, true); } finally { $("review-apply").disabled = false; } };
+  function navigate() {
+    if (!principal) return;
+    if (mutating) { history.replaceState(null, "", "#" + current); status("正在保存，请等待操作完成"); return; }
+    const hash = location.hash.slice(1), fallback = Object.keys(pages).find(key => allowed(pages[key][3]));
+    if (!fallback) { empty(workspace, "没有可用的运维权限", "请使用访问口令登录。"); workspace.setAttribute("aria-busy", "false"); $("refresh").disabled = true; return; }
+    current = pages[hash] && allowed(pages[hash][3]) ? hash : fallback;
+    if (hash !== current) history.replaceState(null, "", "#" + current);
+    status(""); render();
+  }
+  window.addEventListener("hashchange", navigate);
+  $("refresh").onclick = () => { if (!mutating) { status(""); render(); } };
   $("signout").onclick = async () => { try { await api("/api/logout", {}); window.S2Auth.clear(); location.replace("/login"); } catch (error) { status(error.message, true); } };
   (async () => {
     try {
       principal = await api("me"); $("identity").textContent = ({owner: "访问口令已验证", local: "设备本机访问", guest: "只读访问"}[principal.kind] || "访问密钥");
-      for (const [key, [label, , scope]] of Object.entries(pages)) if (allowed(scope)) { const btn = button(label, async () => { if (loading) return; current = key; status(""); location.hash = key; await render(); }); btn.dataset.page = key; $("navigation").append(btn); }
-      const hash = location.hash.slice(1); if (pages[hash] && allowed(pages[hash][2])) current = hash;
-      await render();
-    } catch (error) { status(error.message, true); }
+      for (const [key, [label, , , scope]] of Object.entries(pages)) if (allowed(scope)) {
+        const btn = button(label, () => { if (mutating) { status("正在保存，请等待操作完成"); return; } if (current !== key) location.hash = key; }); btn.dataset.page = key; $("navigation").append(btn);
+      }
+      navigate();
+    } catch (error) { workspace.setAttribute("aria-busy", "false"); status(error.message, true); empty(workspace, "连接失败", "请刷新页面重试。"); }
   })();
 })();

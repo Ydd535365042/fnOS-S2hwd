@@ -44,8 +44,9 @@
       </div>
 
 <a class="btn sm ghost" href="/">返回控制台</a><span class="spacer"></span><span id="identity" class="muted">连接中…</span><button class="btn sm" id="signout" type="button">退出登录</button></div></header>
-<main class="content"><nav id="navigation" class="ops-navigation" aria-label="运维功能"></nav>
-<div class="heading"><h1 id="page-title">设备健康</h1><button class="btn sm" id="refresh" type="button">刷新</button></div>
-<p id="status" role="status" hidden></p><div id="workspace" aria-live="polite"></div></main></div>
-<dialog class="ops-review" id="review"><h2>确认恢复配置</h2><p class="help">请核对差异。恢复前会自动备份当前配置。</p><pre id="review-diff"></pre><div class="actions"><button class="btn" id="review-cancel">取消</button><button class="btn primary" id="review-apply">确认恢复</button></div></dialog>
+<main class="content ops-content">
+<div class="ops-intro"><span>运维</span><p>配置、维护与自动化</p></div>
+<nav id="navigation" class="ops-navigation" aria-label="运维功能"></nav>
+<div class="heading"><div><h1 id="page-title">备份与版本</h1><p id="page-description" class="page-description">保留配置，变更前有据可查。</p></div><button class="btn" id="refresh" type="button"><svg aria-hidden="true"><use href="#i-refresh"/></svg>刷新</button></div>
+<p id="status" role="status" tabindex="-1" hidden></p><div id="workspace" aria-busy="true"></div></main></div>
 </body></html>

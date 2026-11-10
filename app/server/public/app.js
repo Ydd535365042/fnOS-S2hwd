@@ -2408,32 +2408,50 @@
 
   function reviewScript(info) {
     const dialog = document.createElement("dialog");
-    dialog.className = "viewer";
-    dialog.style.padding = "20px";
-    const title = document.createElement("h3"); title.textContent = "执行前审查：" + info.name;
-    const summary = document.createElement("p");
-    summary.textContent = info.source + " · " + (info.changed ? "首次执行或内容已变化" : "与上次执行一致") + " · SHA256 " + info.sha256;
-    summary.style.overflowWrap = "anywhere";
-    const pre = document.createElement("pre"); pre.textContent = info.diff || info.content;
-    pre.style.cssText = "max-height:45vh;overflow:auto;white-space:pre-wrap";
-    const label = document.createElement("label"); label.textContent = "执行超时（10–3600 秒） ";
-    const timeout = document.createElement("input"); timeout.type = "number"; timeout.min = "10"; timeout.max = "3600"; timeout.value = "600"; label.append(timeout);
-    const cancel = document.createElement("button"); cancel.className = "btn"; cancel.textContent = "取消";
-    const start = document.createElement("button"); start.className = "btn primary"; start.textContent = "已审查，执行此版本";
-    dialog.append(title, summary);
+    dialog.className = "script-review";
+    dialog.setAttribute("aria-labelledby", "script-review-title");
+    const previous = document.activeElement;
+    const node = (tag, value, className = "") => { const el = document.createElement(tag); el.textContent = value; el.className = className; return el; };
+    const head = node("div", "", "sr-head");
+    head.append(node("span", "执行前确认", "sr-eyebrow"));
+    const title = node("h2", info.name.replace(/^\d+-/, "").replace(/\.sh$/, "")); title.id = "script-review-title";
+    head.append(title, node("p", info.source + " · " + (info.changed ? "首次执行或内容已更新" : "与上次批准的版本一致"), "sr-meta"));
+    const body = node("div", "", "sr-body"), footer = node("div", "", "sr-footer");
+    dialog.append(head, body, footer);
     const risks = Array.isArray(info.risks) ? info.risks : [];
-    const acknowledgement = document.createElement("input"); acknowledgement.placeholder = "输入 yes 确认系统改动"; acknowledgement.setAttribute("aria-label", "确认脚本风险");
+    const impact = node("div", "", "sr-impact" + (risks.length ? " has-risk" : ""));
+    impact.append(node("h3", risks.length ? "本次操作会修改系统" : "运行内容"));
     if (risks.length) {
-      const list = document.createElement("ul");
-      risks.forEach(risk => { const item = document.createElement("li"); item.textContent = risk; list.append(item); });
-      dialog.append(list, acknowledgement); start.disabled = true;
-      acknowledgement.oninput = () => { start.disabled = acknowledgement.value !== "yes"; };
+      const list = node("ul", ""); risks.forEach(risk => list.append(node("li", risk))); impact.append(list);
+    } else impact.append(node("p", "请确认下面的脚本内容后再执行。"));
+    body.append(impact);
+    const details = node("details", "", "sr-details");
+    details.append(node("summary", "查看脚本内容与校验信息"), node("p", info.name, "sr-filename"), node("pre", info.content || ""));
+    if (info.diff && info.changed) {
+      const diff = node("details", "", "sr-diff"); diff.append(node("summary", "查看与上次批准版本的差异"), node("pre", info.diff)); details.append(diff);
     }
-    dialog.append(pre, label, cancel, start); document.body.append(dialog); dialog.showModal();
+    details.append(node("span", "SHA256", "sr-hash-label"), node("code", info.sha256, "sr-hash")); body.append(details);
+    const options = node("div", "", "sr-options");
+    const timeoutLabel = node("label", "最长执行时间（秒）", "sr-field");
+    const timeout = document.createElement("input"); Object.assign(timeout, {type: "number", min: "10", max: "3600", step: "1", value: "600", required: true});
+    timeout.setAttribute("aria-label", "最长执行时间（秒）"); timeoutLabel.append(timeout, node("small", "10–3600 秒，超时后终止任务")); options.append(timeoutLabel);
+    const acknowledgement = document.createElement("input");
+    if (risks.length) {
+      const label = node("label", "确认系统改动", "sr-field");
+      Object.assign(acknowledgement, {placeholder: "输入 yes", autocomplete: "off", spellcheck: false});
+      acknowledgement.setAttribute("aria-label", "确认脚本风险"); label.append(acknowledgement, node("small", "输入 yes 表示已了解本次操作影响")); options.append(label);
+    }
+    body.append(options);
+    const cancel = node("button", "取消", "btn"), start = node("button", "确认执行", "btn primary");
+    cancel.type = start.type = "button";
+    const validity = () => { start.disabled = (risks.length > 0 && acknowledgement.value !== "yes") || !timeout.validity.valid; };
+    acknowledgement.oninput = validity; timeout.oninput = validity; validity();
+    footer.append(node("span", "仅执行本次确认的版本", "sr-footnote"), cancel, start);
+    document.body.append(dialog); dialog.showModal(); (risks.length ? acknowledgement : cancel).focus();
     return new Promise(resolve => {
       let done = false;
-      const finish = value => { if (done) return; done = true; dialog.close(); dialog.remove(); resolve(value); };
-      cancel.onclick = () => finish(null); dialog.oncancel = () => finish(null);
+      const finish = value => { if (done) return; done = true; dialog.close(); dialog.remove(); if (previous?.isConnected) previous.focus(); resolve(value); };
+      cancel.onclick = () => finish(null); dialog.oncancel = event => { event.preventDefault(); finish(null); };
       start.onclick = () => { const seconds = Number(timeout.value); if (risks.length && acknowledgement.value !== "yes") return; if (Number.isInteger(seconds) && seconds >= 10 && seconds <= 3600) finish({timeout: seconds, ...(risks.length ? {risk_ack: info.sha256, risk_confirm: "yes"} : {})}); else timeout.reportValidity(); };
     });
   }
