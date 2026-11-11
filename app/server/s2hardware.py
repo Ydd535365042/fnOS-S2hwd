@@ -46,28 +46,43 @@ def _restore(hw, text):
     hw._KV_CACHE.pop(hw.APP_SCHED_CONF, None)
 
 
+def _unit_log(hw, lines=12):
+    """s2-power-schedule.service 最近的输出（apply 脚本的 echo 都进 journal）。"""
+    rc, out = hw.run(["journalctl", "-u", "s2-power-schedule.service", "-n", str(lines), "-o", "cat", "--no-pager"], timeout=10)
+    return [l.strip() for l in (out or "").splitlines() if l.strip()] if rc == 0 else []
+
+
 def _apply_system(hw):
-    """Bring systemd and the RTC alarm in line with the saved plan. Returns an error text or ""."""
+    """Bring systemd and the RTC alarm in line with the saved plan. Returns (error, notice)."""
     enabled = schedule.read_config(hw.APP_SCHED_CONF)["enabled"]
     if hw.NATIVE_ENABLED and boot_unit(hw, enabled):
-        return "开机计划服务设置失败"
+        return "开机计划服务设置失败", ""
     if hw.NATIVE_ENABLED and enabled:
         # Apply through the service, not by calling the script directly: the service has to be running
         # for its stop hook to re-arm the RTC boot alarm when the box is shut down any other way.
-        if hw.run(["systemctl", "restart", "s2-power-schedule.service"], timeout=60)[0]:
-            return "系统应用失败"
-        return ""
-    if os.path.exists(hw.SCHED_APPLY_BIN) and hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)[0]:
-        return "系统应用失败"
+        rc, out = hw.run(["systemctl", "restart", "s2-power-schedule.service"], timeout=60)
+        log = _unit_log(hw)
+        notice = next((l for l in reversed(log) if "定时开机不可用" in l), "")
+        if rc:
+            # 把脚本自己说的原因带出来，别只给一句「系统应用失败」
+            reason = [l for l in log if not l.startswith(("Starting", "Started", "Stopping", "Stopped", "Finished"))][-3:]
+            return "系统应用失败" + ("：" + "；".join(reason) if reason else ""), notice
+        return "", notice
+    if os.path.exists(hw.SCHED_APPLY_BIN):
+        rc, out = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
+        if rc:
+            reason = [l.strip() for l in (out or "").splitlines()
+                      if l.strip() and not l.strip().startswith(("Starting", "Started", "Stopping", "Stopped", "Finished"))][-3:]
+            return "系统应用失败" + ("：" + "；".join(reason) if reason else ""), ""
     if hw.NATIVE_ENABLED:
         hw.run(["systemctl", "stop", "s2-power-schedule.service"], timeout=30)
-    return ""
+    return "", ""
 
 
 # Saving returns as soon as the plan is validated and written. systemd and the RTC are brought in line
 # by one background worker: on this board those commands take long enough to make every click feel stuck.
 _APPLY_LOCK = threading.Lock()
-_APPLY = {"pending": False, "running": False, "error": "", "good": None, "has_good": False}
+_APPLY = {"pending": False, "running": False, "error": "", "notice": "", "good": None, "has_good": False}
 
 
 def _apply_worker(hw):
@@ -79,10 +94,11 @@ def _apply_worker(hw):
             _APPLY["pending"] = False
         applied = _text(hw.APP_SCHED_CONF)
         try:
-            error = _apply_system(hw)
+            error, notice = _apply_system(hw)
         except (OSError, ValueError, TypeError) as failure:
-            error = str(failure) or "系统应用失败"
+            error, notice = str(failure) or "系统应用失败", ""
         with _APPLY_LOCK:
+            _APPLY["notice"] = notice
             if not error:
                 _APPLY.update(error="", good=applied, has_good=True)
         if error:
@@ -104,7 +120,7 @@ def _apply_worker(hw):
                 settled = False
                 if restored:
                     try:
-                        settled = not _apply_system(hw)
+                        settled = not _apply_system(hw)[0]
                     except (OSError, ValueError, TypeError):
                         settled = False
                 tail = "，已恢复为上一次生效的计划" if settled else "，已退回上一次的计划，但系统服务仍未就绪" if restored else "，请检查计划服务与 RTC"
@@ -115,7 +131,7 @@ def _apply_worker(hw):
 
 def apply_state():
     with _APPLY_LOCK:
-        return {"applying": _APPLY["running"] or _APPLY["pending"], "apply_error": _APPLY["error"]}
+        return {"applying": _APPLY["running"] or _APPLY["pending"], "apply_error": _APPLY["error"], "apply_notice": _APPLY["notice"]}
 
 
 def set_schedule(hw, body):

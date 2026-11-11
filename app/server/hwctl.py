@@ -49,7 +49,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.1.3"
+APP_VER = "1.1.4"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -104,7 +104,7 @@ SHARE_SCRIPTS = os.environ.get("TRIM_DATA_SHARE_PATHS", "").split(":")[0]
 LED_DIR = os.environ.get("S2_LED_DIR", "/sys/class/leds")
 BUZZER_SYSFS = os.environ.get("S2_BUZZER_SYSFS", "/sys/devices/platform/gpio_ctrl/buzzer_gpio")
 GPIO_BEEPER = 18
-SCHED_APPLY_BIN = os.environ.get("S2_SCHED_APPLY_BIN", "/usr/local/sbin/s2-power-schedule.sh")
+SCHED_APPLY_BIN = os.environ.get("S2_SCHED_APPLY_BIN", "/usr/local/lib/fnos-s2/power-schedule.sh")
 POWER_LED_STATUS_BIN = os.environ.get("S2_POWER_LED_STATUS_BIN",
                                       "/usr/local/sbin/power-led-net.sh")
 
@@ -1357,12 +1357,17 @@ def scan_patch_modules():
         conf = kv.get("CONF", "").strip()
         if conf and not os.path.isabs(conf):
             conf = os.path.join(base, conf)
-        bundle_hash = ""
+        bundle_hash, bundle_title, bundle_units = "", "", []
         if kv.get("BUNDLED") == "1":
             try:
                 with open(os.path.join(base, "bundle.json"), encoding="utf-8") as stream:
-                    bundle_hash = json.load(stream).get("sha256", "")
-            except (OSError, ValueError):
+                    meta = json.load(stream)
+                bundle_hash, bundle_title = meta.get("sha256", ""), meta.get("title", "")
+                # 原包装进系统的服务文件：从脚本库直接运行 .run 安装时，没有控制台自己的标记，
+                # 只能靠这些文件判断「装没装」
+                bundle_units = [f["path"] for f in meta.get("installed_files", [])
+                                if str(f.get("path", "")).startswith("/etc/systemd/system/")]
+            except (OSError, ValueError, TypeError, AttributeError):
                 pass
         out.append({
             "id": d,
@@ -1378,6 +1383,8 @@ def scan_patch_modules():
             "requires": req,
             "bundled": kv.get("BUNDLED") == "1",
             "sha256": bundle_hash,
+            "bundle_title": bundle_title,
+            "bundle_units": bundle_units,
         })
     _PATCH_SCAN_CACHE["sig"] = sig
     _PATCH_SCAN_CACHE["out"] = list(out)
@@ -1404,7 +1411,7 @@ def patch_view(m, svc=None):
     N 个模块 = 每次刷新 fork 2N 个 shell 且各带 timeout=15 —— 一个坏模块就能把
     /api/state 拖到分钟级。状态文本改由 op_patch(action=status) 按需拉取。
     """
-    enabled = bool(m["conf"]) and os.path.exists(m["conf"])
+    enabled = module_installed(m)
     if svc is None:
         svc = services_state(m.get("services", []))
     return {
@@ -1418,7 +1425,90 @@ def patch_view(m, svc=None):
         "version": m.get("module_ver", ""),
         "bundled": m.get("bundled", False),
         "sha256": m.get("sha256", ""),
+        # 设备上实际装的版本（控制台记录的），和应用内置的安装包版本（version）分开给
+        "installed_version": installed_version(m) if enabled else "",
     }
+
+
+MODULE_VERSIONS = os.path.join(VAR_DIR, "module-versions.json")
+_MODULE_VERSIONS_LOCK = threading.Lock()
+
+
+def module_installed(m):
+    if m["conf"] and os.path.exists(m["conf"]):
+        return True
+    units = m.get("bundle_units") or []
+    return bool(units) and all(os.path.isfile(u) for u in units)
+
+
+def _module_versions():
+    try:
+        with open(MODULE_VERSIONS, encoding="utf-8") as stream:
+            data = json.load(stream)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record_module_version(mid, version, source):
+    """原包装进系统后不会留下自己的版本号：由控制台记下是哪个版本、从哪装的。version 为空表示已卸载。"""
+    with _MODULE_VERSIONS_LOCK:
+        data = _module_versions()
+        if version:
+            data[mid] = {"version": str(version)[:40], "source": str(source)[:120], "at": int(time.time())}
+        else:
+            data.pop(mid, None)
+        try:
+            s2security.atomic_text(MODULE_VERSIONS, json.dumps(data, ensure_ascii=False), mode=0o600)
+        except (OSError, ValueError):
+            pass
+
+
+def installed_version(m):
+    rec = _module_versions().get(m["id"])
+    if isinstance(rec, dict) and rec.get("version"):
+        return rec["version"]
+    marker = os.path.join(PATCH_DIR, m["id"], "enabled")      # 控制台安装内置包时写的，内容是版本号
+    if m.get("bundled") and os.path.isfile(marker):
+        return sysfs_read(marker, "").strip()[:40]
+    return ""
+
+
+_PKG_VERSION_RE = re.compile(r"^(?:VERSION|S2PKG_VER)=['\"]?([0-9][0-9A-Za-z.\-]*)['\"]?\s*$", re.M)
+_NAME_VERSION_RE = re.compile(r"-(\d+(?:\.\d+)+(?:-[0-9A-Za-z]+)?)\.run$", re.I)
+
+
+def identify_package(name, content):
+    """脚本库里的 .run 是不是某个内置模块的原包（任意版本）：按包头里的标题认，版本取包头变量，
+    文件名里带更细的修订号（如 1.1.17-r8）时用文件名的。认不出返回 None。"""
+    cut = content.find(b"#__S2_PAYLOAD_BELOW__")
+    if cut < 0:
+        cut = content.find(b"\x1f\x8b\x08")
+    head = content[:cut if cut >= 0 else 200000][:200000].decode("utf-8", "replace")
+    flat = head.replace(" ", "")
+    for m in scan_patch_modules():
+        title = (m.get("bundle_title") or "").replace(" ", "")
+        if not m.get("bundled") or not title or title not in flat:
+            continue
+        found = _PKG_VERSION_RE.search(head)
+        version = found.group(1) if found else ""
+        by_name = _NAME_VERSION_RE.search(name)
+        if by_name and (not version or by_name.group(1).startswith(version)):
+            version = by_name.group(1)
+        return {"id": m["id"], "version": version}
+    return None
+
+
+def note_package_run(pkg, name, ok):
+    """脚本库里的原包跑完：装上了就记下版本，跑完后模块不在了（卸载 / 还原）就清掉记录。"""
+    m = next((x for x in scan_patch_modules() if x["id"] == pkg.get("id")), None)
+    if not m or not ok:
+        return
+    bust_services_cache()
+    if module_installed(m):
+        record_module_version(m["id"], pkg.get("version") or "", "脚本库 " + name)
+    else:
+        record_module_version(m["id"], "", "")
 
 
 def _has_shebang(path):
@@ -1543,6 +1633,8 @@ def _start_module_job(m, action):
                 with open(log, "a", encoding="utf-8") as stream:
                     for line in _cleanup_module(m, keep_dir=True):
                         stream.write(line + "\n")
+            if not code:
+                record_module_version(m["id"], m.get("module_ver", "") if action == "apply" else "", "控制页「已安装模块」")
             with open(log, "a", encoding="utf-8") as stream:
                 stream.write("\n%s\n" % ("完成" if not code else "失败（退出码 %d），请查看上方日志" % code))
         except Exception as error:  # noqa: BLE001 — the job must always end with a result file
@@ -1612,7 +1704,8 @@ def op_patch(params):
     if action == "status":
         if not m["script"]:
             return True, {"text": "该模块未绑定脚本，无状态可查"}
-        rc, out = _run_module(m["script"], "status", timeout=15)
+        # 自愈包的状态要逐个核对引导文件和守护服务，真机上要 15 秒以上；给足时间，别把慢当失败
+        rc, out = _run_module(m["script"], "status", timeout=60)
         return rc == 0, {"text": (out or "").strip()[:2000] or "（无输出）"}
     if action not in ("apply", "remove"):
         return False, "未知动作：%s" % action

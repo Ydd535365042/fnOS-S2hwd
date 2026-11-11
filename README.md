@@ -4,7 +4,7 @@
 
 由 NIX 独立开发，面向飞牛 fnOS / RK3568 NAS 的硬件控制与运维工具。在网页中管理风扇、指示灯、蜂鸣器和定时开关机，并接收告警与邮件通知。
 
-**当前版本：1.1.3** · [下载安装包](https://github.com/Ydd535365042/fnOS-S2hwd/releases/tag/v1.1.3) · [通知说明](docs/notifications.md) · [更新记录](releases/notes-1.1.3.md)
+**当前版本：1.1.4** · [下载安装包](https://github.com/Ydd535365042/fnOS-S2hwd/releases/tag/v1.1.4) · [通知说明](docs/notifications.md) · [更新记录](releases/notes-1.1.4.md)
 
 1.1.0 固定了风扇滑块的按钮、数字和轨道位置，定时开关机保存立即回应并带等待状态；1.0.9 让滑块边拖边生效、曲线四个点的转速全部可调，并收紧了布局。硬件维护统一在 **控制 → 脚本库 / 已安装模块**，邮件 / Webhook 设置在铃铛菜单中打开。
 
@@ -41,7 +41,7 @@
 
 ## 安装与登录
 
-1. 从 [v1.1.3 发布页](https://github.com/Ydd535365042/fnOS-S2hwd/releases/tag/v1.1.3) 下载 `fnOS-S2-v1.1.3.fpk`，可用随附的 `.sha256` 文件校验。
+1. 从 [v1.1.4 发布页](https://github.com/Ydd535365042/fnOS-S2hwd/releases/tag/v1.1.4) 下载 `fnOS-S2-v1.1.4.fpk`，可用随附的 `.sha256` 文件校验。
 2. 在飞牛 fnOS 应用中心手动安装或升级。已有本应用时保留原应用数据进行升级。
 3. 默认端口为 `18899`，端口和访问口令可在安装向导或应用设置中修改。
 4. 打开控制台，只输入访问口令即可登录；硬件和模块操作进入“控制”，通知设置点击右上角铃铛。
@@ -56,6 +56,13 @@
 ![只需访问口令的登录页面](docs/screenshots/v1.0.2/login-desktop.png)
 
 </details>
+
+## 1.1.4 更新
+
+- 修复定时开关机失效：自愈包守护会删除所有 `s2-*.sh` 脚本，定时脚本已改名并移到应用自己的目录 `/usr/local/lib/fnos-s2/`。
+- 已安装模块分成「已安装」和「可安装的内置包」，卸载后移到可安装；显示设备上实际装的版本，更新后版本号随之变化。
+- 自愈包「查看状态」不再因超时失败；登录页口令框聚焦时不再出现双边框。
+- 硬件时钟不支持唤醒时只提示定时开机不可用，定时关机照常生效。
 
 ## 1.1.3 更新
 
@@ -101,18 +108,19 @@
 - 修复状态刷新被慢操作阻塞、写操作后按钮回跳、多页面同时打开时读数跳动等问题。
 - 移除旧运维中心遗留的配置备份 / 恢复、维护窗口和风扇保护接口。
 
-完整列表见 [1.1.3](releases/notes-1.1.3.md)、[1.1.2](releases/notes-1.1.2.md)、[1.1.1](releases/notes-1.1.1.md)、[1.1.0](releases/notes-1.1.0.md)、[1.0.9](releases/notes-1.0.9.md)、[1.0.8](releases/notes-1.0.8.md) 与 [1.0.7](releases/notes-1.0.7.md) 更新记录，硬件说明见 [原生硬件说明](docs/native-hardware.md)。
+完整列表见 [1.1.4](releases/notes-1.1.4.md)、[1.1.3](releases/notes-1.1.3.md)、[1.1.2](releases/notes-1.1.2.md)、[1.1.1](releases/notes-1.1.1.md)、[1.1.0](releases/notes-1.1.0.md)、[1.0.9](releases/notes-1.0.9.md)、[1.0.8](releases/notes-1.0.8.md) 与 [1.0.7](releases/notes-1.0.7.md) 更新记录，硬件说明见 [原生硬件说明](docs/native-hardware.md)。
 
 ## 兼容性与验证
 
 - 飞牛 fnOS ≥ 0.9.0，arm64；面向 RK3568 NAS（双 SATA 盘位 + eMMC）。
+- 1.1.4 在实机上安装测试了登录、状态读取、风扇手动与恢复自动、模块状态和定时开关机的打开与关闭，桌面和手机浏览器无脚本错误；测试后配置、定时器和 RTC 闹钟都与测试前一致。
 - 1.1.3 在开发机上用模拟硬件验证：滑块、曲线、定时开关机和布局 42 项，风扇卡 14 项，全速测试真实点击 13 项，控制页与通知页 9 项浏览器检查通过；风扇控制与后端识别 24 项、定时计划后台应用 9 项、定时计划脚本 7 项、邮件通知 16 项、脚本迁移和既有后端接口 6 项检查通过；桌面与手机共 14 个视口无脚本错误和横向溢出。
 - 真实 NAS 上的安装升级、风扇手动调速、DTB 刷写与重启、灯光、硬盘休眠 / RTC 唤醒和外部邮件投递尚未实机验证。
 
 ## 从源码构建
 
 ```powershell
-python -I -B build_fpk.py app fpk releases/fnOS-S2-v1.1.3.fpk 1.1.3 releases/changelog-1.1.3.txt
+python -I -B build_fpk.py app fpk releases/fnOS-S2-v1.1.4.fpk 1.1.4 releases/changelog-1.1.4.txt
 ```
 
 ## 许可

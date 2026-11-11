@@ -146,13 +146,15 @@ WantedBy=timers.target"
     echo "未设置关机时间，定时关机关闭"
   fi
   # ---- 定时开机 ----
+  # 硬件时钟写不进闹钟（这块板子不支持唤醒）只影响定时开机：给出提示，不把整个计划判失败。
+  # 以前这里 rc=1，连同已经生效的定时关机一起被回滚，服务还被标成「失败」触发告警。
   if [ -n "$BOOT_TIME" ]; then
     local t
     if t=$(next_epoch "$BOOT_TIME"); then
       if [ -n "$(find_rtc)" ]; then
-        arm_rtc "$t" || rc=1
+        arm_rtc "$t" || echo "定时开机不可用：硬件时钟不接受唤醒闹钟，定时关机照常执行"
       else
-        echo "未找到 RTC wakealarm 接口，定时开机不可用"
+        echo "定时开机不可用：未找到硬件时钟唤醒接口，定时关机照常执行"
       fi
     else
       clear_rtc

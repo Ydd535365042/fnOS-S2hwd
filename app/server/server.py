@@ -536,6 +536,8 @@ def read_job(job):
                 pid = 0
             if not _pid_alive(pid) or _pid_reused(pid, pidf):
                 done, rc = True, None     # 控制台重启前就已经结束、又没留下退出码
+    if done:
+        _after_job(job, mem, rc)
     # 日志超过 256KB 时只读了尾部：总行数按整个文件的换行数算，页面才不会把新行当旧行吞掉。
     # 只数上次之后新增的那一段，别每 700ms 把整份日志从头读一遍。
     total = tail_count
@@ -564,6 +566,27 @@ def read_job(job):
 
 
 _LINE_COUNTS = {}
+_JOBS_NOTED = set()
+
+
+def _after_job(job, mem, rc):
+    """任务结束后只做一次的收尾：内置模块的原包从脚本库跑完，记下 / 清掉设备上装的版本。"""
+    if job in _JOBS_NOTED:
+        return
+    _JOBS_NOTED.add(job)
+    meta = mem or {}
+    if "package" not in meta:
+        try:
+            with open(os.path.join(JOBS_DIR, job + ".meta"), encoding="utf-8") as stream:
+                meta = json.load(stream)
+        except (OSError, ValueError):
+            return
+    pkg = meta.get("package") if isinstance(meta, dict) else None
+    if isinstance(pkg, dict):
+        try:
+            hwctl.note_package_run(pkg, meta.get("name", ""), rc == 0)
+        except (OSError, ValueError):
+            pass
 
 
 def start_job(path, timeout=600, expected_hash=None):
@@ -576,6 +599,14 @@ def start_job(path, timeout=600, expected_hash=None):
     original = path
     log, rcf, pidf = _job_files(job)
     metadata = {"name": os.path.basename(original), "timeout": timeout, "sha256": hashlib.sha256(content).hexdigest()}
+    if original.lower().endswith(".run"):
+        # 脚本库里放的是不是内置模块的原包（任意版本）：跑完后据此记下设备上装的版本
+        try:
+            pkg = hwctl.identify_package(os.path.basename(original), content)
+        except (OSError, ValueError):
+            pkg = None
+        if pkg:
+            metadata["package"] = pkg
     log_created = False
     def fail(lines, rc):
         # Keep launch failures visible, including after the web server restarts.
@@ -753,12 +784,14 @@ class Handler(BaseHTTPRequestHandler):
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>NIX fnOS-S2 · 访问口令</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%232e78ff'/%3E%3Cstop offset='1' stop-color='%231034a8'/%3E%3C/linearGradient%3E%3CclipPath id='c'%3E%3Crect x='25' y='22' width='50' height='56' rx='6'/%3E%3C/clipPath%3E%3C/defs%3E%3Crect width='100' height='100' rx='23' fill='url(%23g)'/%3E%3Cpath d='M25 22 L40 22 L75 78 L60 78 Z' fill='%23fff' fill-opacity='0.62' clip-path='url(%23c)'/%3E%3Crect x='25' y='22' width='15' height='56' rx='6' fill='%23fff'/%3E%3Ccircle cx='32.5' cy='69' r='3.3' fill='%2334e68c'/%3E%3Crect x='60' y='22' width='15' height='56' rx='6' fill='%23fff'/%3E%3Ccircle cx='67.5' cy='69' r='3.3' fill='%2334e68c'/%3E%3C/svg%3E">
 <style>
 :root{--bg:#f3f5f8;--card:#fff;--line:#e1e6ec;--line-2:#d2d9e2;--fg:#1a2330;--muted:#5d6979;
- --accent:#1769e0;--on-accent:#fff;--crit:#d43d3d;--crit-soft:#fdecee;--field:#f7f9fb;color-scheme:light}
+ --accent:#1769e0;--on-accent:#fff;--crit:#d43d3d;--crit-soft:#fdecee;--field:#f7f9fb;
+ --ring:rgba(23,105,224,.16);color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#10141a;--card:#171c23;--line:#29313c;--line-2:#36404d;
  --fg:#e3e8ee;--muted:#9ba6b3;--accent:#4b8cf5;--on-accent:#0b1220;--crit:#f06464;--crit-soft:#2b171b;
- --field:#1c222a;color-scheme:dark}}
+ --field:#1c222a;--ring:rgba(75,140,245,.26);color-scheme:dark}}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;min-height:100dvh;display:flex;align-items:center;justify-content:center;
  padding:24px max(16px,env(safe-area-inset-right,0px)) 24px max(16px,env(safe-area-inset-left,0px));
@@ -777,9 +810,17 @@ h1{margin:0 0 4px;font-size:17px;font-weight:600}
 p{margin:0 0 16px;font-size:13px;color:var(--muted)}
 p.err{color:var(--crit);background:var(--crit-soft);padding:8px 10px;border-radius:6px;margin:0 0 14px}
 label{display:block;font-size:12.5px;color:var(--muted);margin:0 0 6px}
-input{width:100%;height:40px;padding:0 12px;border-radius:6px;border:1px solid var(--line-2);
- background:var(--field);color:inherit;font:inherit;font-size:16px}
-input:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+/* 只留一道边框：聚焦时边框变色 + 内贴的柔光，不再在外面再套一圈 outline（看起来像双边框）。
+   手机浏览器自动填充会把底色刷成黄/蓝，用内阴影盖回输入框底色。 */
+input{display:block;width:100%;height:40px;margin:0;padding:0 12px;border-radius:6px;border:1px solid var(--line-2);
+ background:var(--field);color:inherit;font:inherit;font-size:16px;outline:0;box-shadow:none;
+ -webkit-appearance:none;appearance:none;transition:border-color .15s,box-shadow .15s}
+input:focus,input:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+input:-webkit-autofill{-webkit-text-fill-color:var(--fg);caret-color:var(--fg);
+ -webkit-box-shadow:0 0 0 40px var(--field) inset;box-shadow:0 0 0 40px var(--field) inset}
+input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 40px var(--field) inset,0 0 0 3px var(--ring);
+ box-shadow:0 0 0 40px var(--field) inset,0 0 0 3px var(--ring)}
+input::-ms-reveal{filter:opacity(.6)}
 button{margin-top:14px;width:100%;height:40px;border-radius:6px;border:0;background:var(--accent);
  color:var(--on-accent);font:inherit;font-weight:600;cursor:pointer}
 button:disabled{opacity:.5;cursor:not-allowed}
@@ -810,7 +851,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
     def log_request(self, code="-", size="-"):
         """只记路径不记 query，避免旧链接中的口令进入日志。"""
-        path = urllib.parse.urlsplit(self.path).path or "/"
+        # 请求行本身坏掉时 send_error 也会走到这里，那时 self.path 还没有
+        path = urllib.parse.urlsplit(getattr(self, "path", "") or "").path or "/"
         sys.stderr.write('[%s] "%s %s %s" %s %s\n' % (
             time.strftime("%F %T"), self.command, path, self.request_version, code, size))
 

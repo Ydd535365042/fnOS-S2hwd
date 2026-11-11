@@ -3275,10 +3275,71 @@
      所以这里可以放心跟着 10 秒轮询一起刷新。 */
   let MODULES = [];
 
+  // 版本号逐段按数字比较：1.1.17-r8 > 1.1.10，1.1.10 > 1.1.9
+  function cmpVer(a, b) {
+    const pa = String(a || "").split(/[.\-]/), pb = String(b || "").split(/[.\-]/);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || "0", y = pb[i] || "0";
+      const nx = parseInt(x.replace(/\D/g, ""), 10) || 0, ny = parseInt(y.replace(/\D/g, ""), 10) || 0;
+      if (nx !== ny) return nx < ny ? -1 : 1;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  }
+  // 内置完整包「安装 / 更新」按钮写清楚会装哪个版本：设备上装的比内置包新时就是降级
+  function bundleApplyLabel(m) {
+    if (!m.enabled) return "安装 " + m.version;
+    const iv = m.installed_version;
+    if (!iv) return "重装 " + m.version;
+    const c = cmpVer(iv, m.version);
+    return c === 0 ? "重装" : c < 0 ? "更新到 " + m.version : "改装内置 " + m.version;
+  }
+
+  function moduleRowHtml(m) {
+    // module.conf 是 .run 安装包写进来的，标题/说明/服务名同样不可信
+    // 没装的模块，它声明的服务当然查不到：不摆一排「未知」，看着像出错
+    const svc = Object.keys(m.services || {}).filter((k) => m.enabled || m.services[k] !== "unknown").map((k) => {
+      const st = m.services[k];
+      return '<span class="svc' + (st === "active" || st === "done" ? " on" : "") + '" title="' + esc(k) + '">' +
+        esc(zhSvc(st)) + "</span>";
+    }).join("");
+    const desc = m.desc || "（无说明）";
+    const badge = (m.title ? String(m.title).slice(0, 2) : "") || "模块";
+    // 版本：已装的显示设备上实际装的版本；内置包另外标出应用自带的安装包版本
+    let ver = "";
+    if (m.bundled && m.enabled) {
+      ver = '<span class="ver" title="设备上装的版本">' + esc(m.installed_version ? "已装 " + m.installed_version : "已装（版本未记录）") + "</span>" +
+        (m.installed_version !== m.version ? '<span class="ver dim" title="应用自带的安装包版本">内置 ' + esc(m.version) + "</span>" : "");
+    } else if (m.version) {
+      ver = '<span class="ver" title="' + (m.bundled ? "应用自带的安装包版本" : "版本") + '">' + esc(m.version) + "</span>";
+    }
+    const acts = m.bundled && !m.enabled
+      // 可安装的内置包：只有安装和查看状态，没有可停用 / 卸载的东西
+      ? '<button class="btn sm primary" data-act="apply">' + esc(bundleApplyLabel(m)) + "</button>" +
+        '<button class="btn sm" data-act="status">查看状态</button>'
+      : '<button class="btn sm' + (m.enabled ? "" : " primary") + '" data-act="apply"' + (m.enabled && !m.bundled ? " disabled" : "") + ">" +
+          esc(m.bundled ? bundleApplyLabel(m) : "启用") + "</button>" +
+        (m.bundled ? '<button class="btn sm" data-act="status">查看状态</button>' : "") +
+        '<button class="btn sm" data-act="remove"' + (m.enabled ? "" : " disabled") + ">停用</button>" +
+        '<button class="btn sm danger" data-act="uninstall">卸载</button>';
+    return '<div class="mod-row' + (m.enabled ? "" : " is-off") + '" data-mod="' + esc(m.id) + '">' +
+      '<div class="mod-badge" title="' + esc(m.code || "") + '">' + esc(badge) + "</div>" +
+      '<div class="mod-main">' +
+        '<div class="mod-title">' + esc(m.title) + ver + "</div>" +
+        '<div class="mod-desc" title="' + esc(desc) + '">' + esc(desc) + "</div>" +
+        (svc ? '<div class="mod-svc">' + svc + "</div>" : "") +
+      "</div>" +
+      '<div class="mod-acts">' + acts + "</div>" +
+    "</div>";
+  }
+
   function renderModules() {
     const list = document.getElementById("mod-list");
     const warnBox = document.getElementById("mod-warn");
-    document.getElementById("mod-count").textContent = MODULES.length + " 个";
+    // 「已安装」只算真装在设备上的：没装的内置包放到下面「可安装的内置包」，不算进来
+    const installed = MODULES.filter((m) => m.enabled || !m.bundled);
+    const available = MODULES.filter((m) => m.bundled && !m.enabled);
+    document.getElementById("mod-count").textContent = installed.length + " 个";
     document.getElementById("mod-fw").textContent = S2.state && S2.state.framework_ver || "1.0.0";
 
     const warns = (S2.state && S2.state.patch_warnings) || [];
@@ -3298,54 +3359,20 @@
       warnBox.textContent = "";
     }
 
-    // 模块操作进行中（内置包安装最长 3 分钟）或「确认卸载」待点时不重画：
+    // 模块操作进行中或「确认卸载」待点时不重画：
     // 重画会把「处理中…」的按钮恢复成可点，或者把已经武装的确认按钮还原
     if (modPending || list.querySelector('[data-armed="1"]')) { modRenderStale = true; return; }
     modRenderStale = false;
 
-    if (!MODULES.length) {
-      setHtmlIfChanged(list,
-        '<div class="empty" style="padding:26px 14px;text-align:center;color:var(--text-3)">' +
-          '<div style="font-size:var(--t-base);color:var(--text);margin-bottom:4px">还没有安装任何模块</div>' +
-          '<div style="font-size:var(--t-sm)">把 .run 单文件包拖到上面的脚本库，上传后点「运行」完成安装</div>' +
-        "</div>");
-      return;
-    }
-
-    setHtmlIfChanged(list, MODULES.map((m) => {
-      // module.conf 是 .run 安装包写进来的，标题/说明/服务名同样不可信
-      // 没装的模块，它声明的服务当然查不到：不摆一排「未知」，看着像出错
-      const svc = Object.keys(m.services || {}).filter((k) => m.enabled || m.services[k] !== "unknown").map((k) => {
-        const st = m.services[k];
-        return '<span class="svc' + (st === "active" || st === "done" ? " on" : "") + '" title="' + esc(k) + '">' +
-          esc(zhSvc(st)) + "</span>";
-      }).join("");
-      const desc = m.desc || "（无说明）";
-      // 角标取模块中文标题的前 2 个字，不再显示 module.conf 里的英文 CODE——
-      // 标题都没写、desc 之类都读不到的极端情况才退回「模块」两个字占位
-      const badge = (m.title ? String(m.title).slice(0, 2) : "") || "模块";
-      return '<div class="mod-row' + (m.enabled ? "" : " is-off") + '" data-mod="' + esc(m.id) + '">' +
-        '<div class="mod-badge" title="' + esc(m.code || "") + '">' + esc(badge) + "</div>" +
-        '<div class="mod-main">' +
-          '<div class="mod-title">' + esc(m.title) +
-            (m.version ? '<span class="ver" title="版本">' + esc(m.version) + "</span>" : "") +
-          "</div>" +
-          '<div class="mod-desc" title="' + esc(desc) + '">' + esc(desc) + "</div>" +
-          (svc ? '<div class="mod-svc">' + svc + "</div>" : "") +
-        "</div>" +
-        '<div class="mod-acts">' +
-          // 三个同级操作，原来三种形态：启用/停用有边框、卸载是裸文字。
-          // 卸载虽然危险，但它是个按钮，不是一条链接 —— 给 danger 变体（红字 + 淡红描边），
-          // 第一次点变成实心红确认态，两级都和「停用」区分得开。
-          // 模块停着的时候，「启用」才是这一行唯一该做的事，用 primary 指出来。
-          '<button class="btn sm' + (m.enabled ? "" : " primary") + '" data-act="apply"' + (m.enabled && !m.bundled ? " disabled" : "") + ">" + (m.bundled ? (m.enabled ? "更新/重装" : "安装") : "启用") + "</button>" +
-          (m.bundled ? '<button class="btn sm" data-act="status">查看状态</button>' : "") +
-          '<button class="btn sm" data-act="remove"' + (m.enabled ? "" : " disabled") + ">停用</button>" +
-          // 内置完整包卸载时只撤掉装进系统的东西，安装包留在列表里，随时能重新安装
-          '<button class="btn sm danger" data-act="uninstall"' + (m.bundled && !m.enabled ? " disabled" : "") + ">卸载</button>" +
-        "</div>" +
+    const emptyInstalled =
+      '<div class="empty" style="padding:22px 14px;text-align:center;color:var(--text-3)">' +
+        '<div style="font-size:var(--t-base);color:var(--text);margin-bottom:4px">还没有安装任何模块</div>' +
+        '<div style="font-size:var(--t-sm)">' + (available.length ? "在下面「可安装的内置包」里安装，或把" : "把") +
+          " .run 单文件包拖到上面的脚本库，上传后点「运行」完成安装</div>" +
       "</div>";
-    }).join(""));
+    setHtmlIfChanged(list,
+      (installed.length ? installed.map(moduleRowHtml).join("") : emptyInstalled) +
+      (available.length ? '<div class="mod-sub">可安装的内置包</div>' + available.map(moduleRowHtml).join("") : ""));
   }
 
   let modPending = false, modRenderStale = false;
@@ -3355,9 +3382,12 @@
     if (!m || modPending) return;
     if (running && act !== "status") { toast("执行日志里还有任务在运行，等它结束再操作模块", "err"); return; }
     if (m.bundled && act === "apply") {
+      const risks = [id === "s2-selfheal" ? "安装或更新完整自愈包，包括设备树、引导配置和守护服务；原包会备份，不会自动重启。" : "安装开关机指示灯与提示音组件，停用旧的重复灯光服务。"];
+      if (m.enabled && m.installed_version && cmpVer(m.installed_version, m.version) > 0) {
+        risks.unshift("设备上已装的是 " + m.installed_version + "，比应用内置的 " + m.version + " 新：继续会改装成较旧的 " + m.version + "。");
+      }
       const approved = await reviewScript({name: m.title, source: "内置完整包 " + m.version, changed: true,
-        sha256: m.sha256 || "", content: m.desc,
-        risks: [id === "s2-selfheal" ? "安装或更新完整自愈包，包括设备树、引导配置和守护服务；原包会备份，不会自动重启。" : "安装开关机指示灯与提示音组件，停用旧的重复灯光服务。"]});
+        sha256: m.sha256 || "", content: m.desc, risks: risks});
       if (!approved) return;
     }
     if (act === "uninstall") {
@@ -3673,6 +3703,11 @@
       const err = ps.apply_error || "";
       if (err && err !== schErrShown) toast(err, "err");
       schErrShown = err;
+      // 设备应用计划时给出的提示（比如硬件时钟不接受唤醒，只有定时开机不可用）：替换卡片底部的说明
+      const help = document.getElementById("ov-sch-help");
+      const note = ps.apply_notice || "";
+      help.textContent = note || "开机靠硬件时钟唤醒，需保持通电；按设备时间执行";
+      help.classList.toggle("warn", !!note);
     }
     if (ps && !schDirty) {
       SCH.extended = Array.isArray(ps.weekdays);

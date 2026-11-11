@@ -9,5 +9,5 @@ ExecCondition=/usr/bin/python3 /usr/local/sbin/s2_schedule.py due
 # 如果这次闹钟触发时设备是开着的（该关机没关成、或用户一直在用），
 # 之后就没有人再设下一次 —— 定时开机会永久失效。所以关机前再算一遍。
 # arm-next 永远返回 0，不会因为 RTC 设不上而拦住关机。
-ExecStart=/usr/local/sbin/s2-power-schedule.sh arm-next
+ExecStart=/usr/local/lib/fnos-s2/power-schedule.sh arm-next
 ExecStart=/sbin/poweroff

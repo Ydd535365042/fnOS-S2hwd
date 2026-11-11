@@ -38,8 +38,11 @@ class Deployment(Activation):
             "agent/fnos-s2-dtb-guard.path": "usr/local/lib/fnos-s2/units/fnos-s2-dtb-guard.path",
             "agent/fnos-s2-scsi-rescan.service": "usr/local/lib/fnos-s2/units/fnos-s2-scsi-rescan.service",
         }
-        for name in ("s2_schedule.py", "s2-power-schedule.sh"):
-            files["firmware/"+name] = "usr/local/sbin/"+name
+        files["firmware/s2_schedule.py"] = "usr/local/sbin/s2_schedule.py"
+        # Not in /usr/local/sbin and not named s2-*.sh: the S2 self-heal package's guard (1.1.17+) treats every
+        # s2-*.sh in the shared bin directories as a rival hook and deletes it within seconds, which silently
+        # broke the power schedule. Our own library directory is not scanned.
+        files["firmware/s2-power-schedule.sh"] = "usr/local/lib/fnos-s2/power-schedule.sh"
         for name in ("s2-power-schedule.service", "s2-power-shutdown.service", "s2-power-shutdown.timer"):
             files["firmware/"+name] = "etc/systemd/system/"+name
         for name in LIGHTS: files["agent/"+name] = "etc/systemd/system/"+name
@@ -69,7 +72,11 @@ class Deployment(Activation):
                 if target.endswith((".py", ".sh")): os.chmod(self.root/target, 0o755)
             schedule = self.root/"etc/s2-power-schedule.conf"
             if not schedule.exists(): s2dtb.atomic(schedule, b"ENABLED=0\nSHUTDOWN_TIME=\nBOOT_TIME=\n")
+            # Earlier releases put the schedule script here; the new units no longer reference it.
+            (self.root/"usr/local/sbin/s2-power-schedule.sh").unlink(missing_ok=True)
             self.system("daemon-reload")
+            # A failed run (e.g. while the script was missing) leaves the unit "failed" and keeps raising an alert.
+            self.system("reset-failed", "s2-power-schedule.service", required=False)
             if self.native.capabilities()["ready"] or s2dtb.state(self.root)["prepared"]: self.system("enable", OWN)
             if s2native.kv(schedule).get("ENABLED") == "1":
                 self.system("enable", "s2-power-schedule.service")
