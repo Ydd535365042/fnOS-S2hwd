@@ -84,7 +84,7 @@ DANGER_PATHS = ("/api/script/save", "/api/script/start", "/api/script/upload",
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 # 所有硬件写操作均通过敏感操作授权；只读查询可以保留无口令访问。
-READ_OPS = ("status", "hwinfo", "logs", "integration_status")
+READ_OPS = ("status", "hwinfo", "logs")
 _NOTIFIER = None
 _NOTIFIER_LOCK = threading.Lock()
 
@@ -201,7 +201,7 @@ def agent_call(op, params):
         # timeout 是 urlopen 的参数，不是 Request 的 —— 写在 Request 上会抛 TypeError，
         # 非 root 安装下每一个经代理的写操作都会变成「硬件代理不可用」。
         # 定时开关机 apply 最长 30 秒，留出余量。
-        with urllib.request.urlopen(req, timeout=180 if op == "config_apply" else 45) as r:
+        with urllib.request.urlopen(req, timeout=200 if op == "patch" else 45) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception as e:  # noqa
         # 异常文本（ConnectionRefusedError 等）是英文、给排障用，不直接当提示语——
@@ -282,7 +282,7 @@ def hw_call(op, params):
         force = bool(params.get("force"))
         return {"ok": True, "msg": "只读模式（未检测到管理员权限代理，缺少健康检测数据）",
                 "data": hwinfo.collect_hwinfo(force=force)}
-    if op in ("config_snapshot", "config_validate", "schedule_info", "fan_guard_info", "diagnostics_files", "integration_status"):
+    if op == "schedule_info":
         return _shape_hw_result(*hwctl.dispatch(op, params))
     return {"ok": False, "msg": "当前为普通用户身份且未部署管理员权限代理，无法写入硬件；"
                                "请以管理员权限部署 s2hw-agent，或在应用中心改用管理员权限安装。",
@@ -323,6 +323,8 @@ def cleanup_jobs(force=False):
             for _, k in done[:len(JOBS) - MAX_JOBS]:
                 JOBS.pop(k, None)
         live = set(JOBS)
+    for k in [k for k in list(_LINE_COUNTS) if k not in live]:
+        _LINE_COUNTS.pop(k, None)
     # 文件按修改时间清：跑完超过 JOB_TTL 的删掉。还在写的日志 mtime 一直是新的，不会误删
     try:
         for fn in os.listdir(JOBS_DIR):
@@ -485,9 +487,11 @@ def read_job(job):
             raw = f.read()
     except OSError:
         raw = b""
-    lines = [clean_line(x) for x in raw.decode("utf-8", "replace").split("\n")]
-    if lines and lines[-1] == "":
-        lines.pop()
+    raw_lines = raw.decode("utf-8", "replace").split("\n")
+    if raw_lines and raw_lines[-1] == "":
+        raw_lines.pop()
+    tail_count = len(raw_lines)
+    lines = [clean_line(x) for x in raw_lines[-MAX_LINES_PER_JOB:]]
     rc, done = None, False
     try:
         with open(rcf, "r") as f:
@@ -514,16 +518,30 @@ def read_job(job):
                 pid = 0
             if not _pid_alive(pid):
                 done, rc = True, None     # 控制台重启前就已经结束、又没留下退出码
-    # 日志超过 256KB 时只读了尾部：总行数按整个文件的换行数算，页面才不会把新行当旧行吞掉
-    total = len(lines)
+    # 日志超过 256KB 时只读了尾部：总行数按整个文件的换行数算，页面才不会把新行当旧行吞掉。
+    # 只数上次之后新增的那一段，别每 700ms 把整份日志从头读一遍。
+    total = tail_count
     if size > len(raw):
+        prev_size, prev_total = _LINE_COUNTS.get(job, (0, 0))
+        start = prev_size if 0 < prev_size <= size else 0
         try:
             with open(log, "rb") as f:
-                total = sum(chunk.count(b"\n") for chunk in iter(lambda: f.read(1 << 20), b""))
+                f.seek(start)
+                counted, left = 0, size - start
+                while left > 0:
+                    chunk = f.read(min(left, 1 << 20))
+                    if not chunk:
+                        break
+                    counted += chunk.count(b"\n"); left -= len(chunk)
+            total = (prev_total if start else 0) + counted
+            _LINE_COUNTS[job] = (size, total)
         except OSError:
             pass
-    return {"lines": lines[-MAX_LINES_PER_JOB:], "total": total, "done": done, "rc": rc,
+    return {"lines": lines, "total": total, "done": done, "rc": rc,
             "lost": done and rc is None}
+
+
+_LINE_COUNTS = {}
 
 
 def start_job(path, timeout=600, expected_hash=None):
@@ -655,7 +673,12 @@ def inspect_script(name, factory=False):
 def managed_jobs():
     result = []
     try:
-        filenames = sorted(os.listdir(JOBS_DIR))[-256:] if not os.path.islink(JOBS_DIR) and os.path.isdir(JOBS_DIR) else []
+        if os.path.islink(JOBS_DIR) or not os.path.isdir(JOBS_DIR):
+            filenames = []
+        else:
+            metas = [f for f in os.listdir(JOBS_DIR) if f.endswith(".meta")]
+            # 按时间取最近 256 个：文件名是随机 uuid，按名字排序等于随机挑
+            filenames = sorted(metas, key=lambda f: os.path.getmtime(os.path.join(JOBS_DIR, f)))[-256:]
     except OSError:
         filenames = []
     for filename in filenames:
@@ -689,6 +712,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "S2HW/1.2"
     protocol_version = "HTTP/1.1"          # 复用连接，减少轮询开销
     timeout = 30                           # 慢速/半开连接别无限期占线程
+    # 小响应（按钮结果、轮询）不要等对端的延迟 ACK：否则每次多等 40–200ms
+    disable_nagle_algorithm = True
 
     # public/ 只发这几种后缀。见 _static 里的说明。
     STATIC_EXT = (".html", ".js", ".css", ".svg", ".png", ".ico", ".webmanifest")
@@ -1261,7 +1286,27 @@ button:disabled{opacity:.5;cursor:not-allowed}
         return path
 
     # ---- GET ----
+    def _guarded(self, handler):
+        try:
+            handler()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as error:  # noqa: BLE001 — one bad request must not drop the connection silently
+            sys.stderr.write("[%s] unhandled %s %s: %r\n" % (
+                time.strftime("%F %T"), self.command, urllib.parse.urlsplit(self.path).path, error))
+            self.close_connection = True
+            try:
+                self._json({"ok": False, "msg": "服务器内部错误，请稍后重试", "detail": type(error).__name__}, 500)
+            except Exception:  # noqa: BLE001 — headers may already be on the wire
+                pass
+
     def do_GET(self):
+        self._guarded(self._do_get)
+
+    def do_POST(self):
+        self._guarded(self._do_post)
+
+    def _do_get(self):
         if hasattr(self, "_principal_cached"):
             del self._principal_cached
         raw_path = urllib.parse.urlsplit(self.path).path
@@ -1383,7 +1428,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self._json({"ok": False, "msg": "未知接口"}, 404)
 
     # ---- POST ----
-    def do_POST(self):
+    def _do_post(self):
         if hasattr(self, "_principal_cached"):
             del self._principal_cached
         path = self._norm(urllib.parse.urlsplit(self.path).path)
@@ -1451,7 +1496,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
             return
         if path in ("/api/notifications", "/api/notifications/test"):
             try:
-                data = get_notifier().save_notifications(body) if path == "/api/notifications" else get_notifier().send_test()
+                data = get_notifier().save_notifications(body) if path == "/api/notifications" else get_notifier().send_test(body)
                 audit("notifications:save" if path == "/api/notifications" else "notifications:test", {}, remote, True)
                 self._json({"ok": True, "data": data})
             except (Problem, OSError, ValueError) as error:
@@ -1477,8 +1522,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
                 audit("deny:hw:%s" % op, {"ip": remote}, remote, False)
                 self._json({"ok": False, "msg": DANGER_DENY_MSG}, 403)
                 return
-            scope = "read" if op in READ_OPS or op in ("schedule_info", "fan_guard_info") else (
-                "admin" if op in ("set_port", "config_apply", "config_snapshot", "config_validate") else "scripts" if op == "patch" else "control")
+            scope = "read" if op in READ_OPS or op == "schedule_info" else (
+                "admin" if op == "set_port" else "scripts" if op == "patch" else "control")
             if not self._require_scope(scope):
                 return
             self._audit_op = op

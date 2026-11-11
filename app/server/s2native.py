@@ -77,8 +77,6 @@ class Native:
                     self.original_leds[str(self.root/"sys/class/leds"/label)] = tuple(values)
                 self.saved_leds = data
             except (OSError, ValueError, TypeError): self.led_history_error = "灯光原状态记录无法读取，请先检查备份"
-        self.guard_bad = self.guard_good = 0
-        self.guard_reason = ""
 
     def fan(self):
         matches = [p for p in sorted((self.root/"sys/class/hwmon").glob("hwmon*"))
@@ -145,32 +143,21 @@ class Native:
                 if max(curve(None if cpu is None else cpu+2, config, "CPU"), curve(highest+2, config, "HDD")) >= 30:
                     duty = 30
         except (ValueError, TypeError): duty, reason = 100, "温控曲线无效"
-        guard = kv(self.conf/"fan-guard.conf")
-        if guard.get("ENABLED") == "1":
-            try:
-                cpu_limit = max(50, min(85, int(guard.get("CPU_LIMIT", 80))))
-                disk_limit = max(40, min(60, int(guard.get("DISK_LIMIT", 55))))
-                count = max(1, min(10, int(guard.get("FAIL_SAMPLES", 3))))
-            except ValueError: cpu_limit, disk_limit, count = 80, 55, 1
-            fault = "硬盘温度不可安全读取" if unknown else "硬盘持续超温" if highest >= disk_limit else "CPU 持续超温" if cpu is not None and cpu >= cpu_limit else ""
-            if fault:
-                self.guard_bad += 1; self.guard_good = 0
-                if self.guard_bad >= count: self.guard_reason = fault
-            elif cpu is not None and cpu < cpu_limit-3 and highest < disk_limit-3:
-                self.guard_bad = 0; self.guard_good += 1
-                if self.guard_good >= 2: self.guard_reason = ""
-        else: self.guard_bad = self.guard_good = 0; self.guard_reason = ""
-        reason = reason or self.guard_reason
         if cpu is None: reason = "CPU 温度传感器无效"
         elif cpu >= min(85, trip-1 if trip is not None else 85): reason = "达到内核温控安全阈值"
         force = number(read(self.runtime/"force_until")) or 0
+        manual = number(read(self.runtime/"manual_duty"))
+        manual = int(manual) if manual is not None and 30 <= manual <= 100 else None
         if reason: duty, mode = 100, "protect"
         elif force > now: duty, mode = 100, "test"
+        # Manual speed never undercuts the full-speed anchor or the protection paths above.
+        elif manual is not None: duty, mode = (100 if duty >= 100 else manual), "manual"
         else: duty, mode = max(duty, 30 if unknown else 0), "auto"
         actual = self.fan_write(duty)
         status = {"timestamp": str(int(now)), "mode": mode, "guard_reason": reason,
-                  "cpu_temp": "" if cpu is None else str(cpu), "hdd_max_temp": str(highest),
+                  "cpu_temp": "" if cpu is None else str(cpu), "hdd_max_temp": str(highest) if temps else "",
                   "hdd_source": "unknown" if unknown else "smartctl", "duty_pct": str(actual), "level": str(actual),
+                  "manual_duty": "" if manual is None else str(manual),
                   "disks": " ".join(f"{k}={v}" for k,v in self.disks.items())}
         return status
 

@@ -39,6 +39,7 @@ class H(BaseHTTPRequestHandler):
     # 只服务回环上的 server.py，一个连接一条请求就够，不复用也别复用得莫名其妙。
     protocol_version = "HTTP/1.0"
     timeout = 15
+    disable_nagle_algorithm = True
 
     def _authorized(self):
         key = s2security.read_agent_key() if hwctl is not None else ""

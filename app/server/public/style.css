@@ -353,6 +353,22 @@ button:focus:not(:focus-visible),.seg button:focus:not(:focus-visible),.nav-item
 .fan-read{display:flex;align-items:center;gap:12px;min-height:48px}
 .fan-read .big{flex:none}
 .fan-src{font-size:12px;color:var(--muted);flex:1 1 auto;min-width:0}
+.fan-rows{margin:0;display:flex;flex-direction:column;border-top:1px solid var(--line)}
+.fan-row{display:grid;grid-template-columns:auto auto 1fr auto;align-items:baseline;gap:4px 12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.fan-row dt{color:var(--muted);white-space:nowrap}
+.fan-row dd{margin:0;font-variant-numeric:tabular-nums;white-space:nowrap}
+.fan-row .t{font-weight:600}
+.fan-row .a{color:var(--faint);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fan-row .d{text-align:right;color:var(--muted)}
+.fan-row.is-lead .d{color:var(--fg);font-weight:600}
+.fan-manual{display:grid;grid-template-columns:auto 1fr 3.2em auto;align-items:center;gap:10px;font-size:12.5px}
+.fan-manual label{color:var(--muted);white-space:nowrap}
+.fan-manual output{font-variant-numeric:tabular-nums;text-align:right;color:var(--muted);white-space:nowrap}
+.fan-manual.is-on output{color:var(--fg);font-weight:600}
+.fan-manual input[type=range]{width:100%;min-width:0;height:28px;margin:0;accent-color:var(--fan-c,var(--accent));cursor:pointer;touch-action:pan-y}
+.fan-manual input[type=range]:disabled{cursor:not-allowed;opacity:.5}
+.fan-manual.is-busy input[type=range]{opacity:.6}
+.flip-front>.help:last-child{margin-top:auto}
 .fan-svg{flex:none;width:48px;height:48px}
 .fan-svg .ring{fill:none;stroke:var(--line-2);stroke-width:2}
 .fan-svg .blade{transform-origin:50px 50px;animation:spin var(--spin,2.4s) linear infinite;

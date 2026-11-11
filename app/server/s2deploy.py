@@ -119,33 +119,38 @@ class Deployment(Activation):
         return {"enabled": enabled}
 
     def scripts(self, source, directory):
-        source, directory = Path(source), Path(directory)
+        """Install missing factory scripts, retire unusable v1.0.0 defaults, keep user scripts."""
+        defaults, directory = Path(source)/"server/default_scripts", Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        legacy = json.loads((source/"bundled/retired-defaults.json").read_text(encoding="utf-8"))
         archive = directory.parent/"scripts-legacy"
         if archive.is_symlink(): raise ValueError("旧脚本备份目录是链接，未迁移任何脚本")
-        # Recover archived user edits. Known retired factory files stay in the backup;
-        # their dependencies were removed, so never advertise them as runnable tools.
-        if archive.is_dir() and not archive.is_symlink():
-            for old in archive.iterdir():
-                if old.is_symlink() or not old.is_file() or old.suffix not in (".sh", ".run"):
-                    continue
-                digest = hashlib.sha256(old.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-                if legacy.get(old.name) != digest and not (directory/old.name).exists():
-                    s2dtb.atomic(directory/old.name, old.read_bytes()); os.chmod(directory/old.name, 0o755)
-        for name, digest in legacy.items():
+        digest = lambda path: hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+        manifest = defaults/"legacy-defaults.json"
+        retired = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else {}
+        current = {p.name for p in defaults.iterdir() if p.is_file() and not p.is_symlink() and p.suffix in (".sh", ".run")} if defaults.is_dir() else set()
+        # Unmodified v1.0.0 defaults depend on firmware that is no longer shipped: move them out of the library.
+        for name, known in retired.items():
             if Path(name).name != name: raise ValueError("旧脚本清单文件名无效")
             path = directory/name
-            if path.is_symlink() or not path.is_file(): continue
-            if hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest() != digest: continue
+            if path.is_symlink() or not path.is_file() or digest(path) != known: continue
             archive.mkdir(exist_ok=True)
             destination = archive/name
             if destination.exists() and destination.read_bytes() != path.read_bytes():
-                destination = archive/(path.stem + "-" + digest[:10] + path.suffix)
-            if not destination.exists():
-                s2dtb.atomic(destination, path.read_bytes())
+                destination = archive/(path.stem + "-" + known[:10] + path.suffix)
+            if not destination.exists(): s2dtb.atomic(destination, path.read_bytes())
             if destination.read_bytes() == path.read_bytes(): path.unlink()
-
+        # Bring back user-edited scripts that earlier upgrades archived.
+        if archive.is_dir():
+            for old in archive.iterdir():
+                if old.is_symlink() or not old.is_file() or old.suffix not in (".sh", ".run") or old.name in current: continue
+                if retired.get(old.name) == digest(old) or (directory/old.name).exists(): continue
+                if re.search(r"-[0-9a-f]{10}$", old.stem): continue
+                s2dtb.atomic(directory/old.name, old.read_bytes()); os.chmod(directory/old.name, 0o755)
+        for name in sorted(current):
+            target = directory/name
+            if target.exists() or target.is_symlink(): continue
+            s2dtb.atomic(target, (defaults/name).read_bytes()); os.chmod(target, 0o755)
+        return {"installed": sorted(current)}
     def apply_dtb(self, candidate):
         # Validate both the candidate and current board before touching any services.
         s2dtb.validate(Path(candidate).read_bytes())
@@ -300,7 +305,7 @@ class Deployment(Activation):
         if original.get("pwm-fancontrol.service", {}).get("ActiveState") not in ("active", "activating", "reloading"):
             cpu, trip = self.native.cpu()
             status = s2native.kv(self.native.runtime/"status")
-            disk_temp = s2native.number(status.get("hdd_max_temp"))
+            disk_temp = s2native.number(status.get("hdd_max_temp")) if status.get("hdd_max_temp") else 0  # empty = every disk in standby
             sampled = s2native.number(status.get("timestamp"))
             disk_safe = sampled is not None and 0 <= self.native.clock()-sampled <= 90 and status.get("hdd_source") == "smartctl" and disk_temp is not None and disk_temp < 50
             if fan_original and cpu is not None and cpu < min(75, trip or 75)-3 and disk_safe:

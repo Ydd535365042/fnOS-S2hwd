@@ -165,7 +165,18 @@
                   </svg>
                 </div>
                 <div class="bar"><span class="fill" id="ov-fan-fill" style="width:0%"></span></div>
-                <p class="help">四锚点温控曲线 · 起转 30%、全速 100% 固定</p>
+                <div class="fan-manual" id="ov-fan-manual">
+                  <label for="fan-slider">手动转速</label>
+                  <input type="range" id="fan-slider" min="30" max="100" step="5" value="50" aria-describedby="fan-manual-hint">
+                  <output id="fan-slider-val" for="fan-slider">自动</output>
+                  <button class="btn sm" id="fan-auto" type="button" hidden>恢复自动</button>
+                </div>
+                <p class="help" id="fan-manual-hint" hidden>手动转速在重启后失效；温度到达全速点或触发保护时仍会自动全速</p>
+                <dl class="fan-rows" id="ov-fan-rows">
+                  <div class="fan-row" data-src="cpu"><dt>处理器</dt><dd class="t" id="ov-fan-cpu-t">--</dd><dd class="a" id="ov-fan-cpu-a">--</dd><dd class="d" id="ov-fan-cpu-d">--</dd></div>
+                  <div class="fan-row" data-src="hdd"><dt>硬盘</dt><dd class="t" id="ov-fan-hdd-t">--</dd><dd class="a" id="ov-fan-hdd-a">--</dd><dd class="d" id="ov-fan-hdd-d">--</dd></div>
+                </dl>
+                <p class="help">两路曲线取较高的一路 · 起转 30%、全速 100% 固定 · 点「自定义」调整锚点</p>
               </div>
 
               <div class="flip-face flip-back">
@@ -402,6 +413,7 @@
               <span class="sub">维护脚本和模块安装包都放这里，安装包上传后点「运行」即安装</span>
               <div class="spacer"></div>
               <span class="count" id="script-count" aria-live="polite" title="脚本库里可见的脚本总数">0 个</span>
+              <button class="btn sm ghost" id="script-defaults" type="button" title="把随包的默认脚本补回脚本库；已有的同名脚本不会被覆盖">恢复默认脚本</button>
             </div>
             <div class="dropzone" id="dropzone">
               <svg aria-hidden="true"><use href="#i-upload"/></svg>
@@ -417,6 +429,7 @@
               <!-- 默认空：只有真的运行过脚本，才写「这份日志来自哪个脚本」 -->
               <span class="sub mono" id="term-target"></span>
               <div class="spacer"></div>
+              <button class="btn sm danger" id="term-stop" type="button" hidden title="终止正在运行的脚本">停止</button>
               <button class="btn sm ghost" id="term-copy"><svg aria-hidden="true"><use href="#i-copy"/></svg>复制</button>
               <button class="btn sm ghost" id="term-clear">清空</button>
             </div>

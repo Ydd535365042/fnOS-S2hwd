@@ -17,6 +17,7 @@ hwctl —— S2 硬件控制台的硬件控制层
 """
 
 import glob
+import copy
 import json
 import os
 import re
@@ -47,7 +48,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.0.5"
+APP_VER = "1.0.7"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -335,7 +336,8 @@ def _classify(active_state, unit_type, result):
 # 保证「写了就能马上看到新状态」而不是等 15 秒。
 _SVC_CACHE = {}
 _SVC_CACHE_LOCK = threading.Lock()
-_SVC_CACHE_TTL = 15
+_SVC_FETCH_LOCK = threading.Lock()   # 同一时刻只跑一个 systemctl show，其余请求等它的结果
+_SVC_CACHE_TTL = 25
 
 
 def bust_services_cache():
@@ -379,52 +381,60 @@ def parse_systemctl_show(out):
 
 
 def services_state(names):
-    """一次 systemctl show 取回全部服务的状态，结果缓存 15 秒。
+    """一次 systemctl show 取回全部服务的状态，按服务缓存 25 秒。
 
     原先每个服务都要 1–2 次 systemctl 调用（is-active；非 active 时再 show
     取 Type/Result 判断是不是 oneshot），9 个服务就是 14 次进程 —— 而
     /api/state 是 10 秒一次的轮询，在 RK3568 上每次要烧掉近 1 秒 CPU，
-    还让设备一直无法真正空闲下来。这里合并成一次调用，再加 15 秒缓存：
+    还让设备一直无法真正空闲下来。这里合并成一次调用，再按服务缓存 25 秒：
     /api/sensor（10 秒轮询）大多数情况下直接命中缓存，0 次进程。
 
     返回 {名字: 状态串}；systemctl 不存在（开发机）时全部为 unknown（这个结果
-    也会被缓存 15 秒，避免开发机上每次轮询都现查一次 127）。
+    也会被缓存，避免开发机上每次轮询都现查一次 127）。
     """
     names = list(names)
     if not names:
         return {}
-    key = tuple(sorted(names))
-    now = time.time()
-    with _SVC_CACHE_LOCK:
-        hit = _SVC_CACHE.get(key)
-        if hit and now - hit[0] < _SVC_CACHE_TTL:
-            return dict(hit[1])
-    # 显式补 .service：systemctl 对裸名会自己补后缀，但那是它内部的行为，
-    # 不同版本对 show 的处理不完全一致，我们自己写死更稳。
-    units = [n if "." in n else n + ".service" for n in names]
-    rc, out = run(["systemctl", "show", "-p", "Id,LoadState,ActiveState,Type,Result"] + units, timeout=15)
-    if rc == 127:                      # 没有 systemctl（非 systemd 环境 / 开发机）
-        res = {n: "unknown" for n in names}
+
+    def cached():
+        now = time.time()
         with _SVC_CACHE_LOCK:
-            _SVC_CACHE[key] = (now, dict(res))
+            hits = {n: _SVC_CACHE[n][1] for n in names
+                    if n in _SVC_CACHE and now - _SVC_CACHE[n][0] < _SVC_CACHE_TTL}
+        return hits, [n for n in names if n not in hits]
+
+    res, stale = cached()
+    if not stale:
         return res
-
-    # 归一化：裸名和带 .service 的名字映射到同一个 key（见 _norm_unit）
-    found = parse_systemctl_show(out)
-
-    res = {}
-    for n in names:
-        # 之前这里用原始 n 查表，模块若把服务名写成 "foo.service" 就恒查不到（key 是 "foo"），
-        # 状态永远显示「未知」。用归一化后的名字回查即可。
-        info = found.get(_norm_unit(n))
-        # 没装的单元 systemctl 也会回一段（LoadState=not-found、ActiveState=inactive），
-        # 不能当成「未运行」标红，按「查不到」处理（前端灰点）
-        if not info or info.get("LoadState") == "not-found":
-            res[n] = "unknown"
-            continue
-        res[n] = _classify(info["ActiveState"], info["Type"], info["Result"])
-    with _SVC_CACHE_LOCK:
-        _SVC_CACHE[key] = (now, dict(res))
+    with _SVC_FETCH_LOCK:
+        res, stale = cached()          # 等锁期间别的请求可能已经查过了
+        if not stale:
+            return res
+        now = time.time()
+        # 显式补 .service：systemctl 对裸名会自己补后缀，但那是它内部的行为，
+        # 不同版本对 show 的处理不完全一致，我们自己写死更稳。
+        units = [n if "." in n else n + ".service" for n in stale]
+        rc, out = run(["systemctl", "show", "-p", "Id,LoadState,ActiveState,Type,Result"] + units, timeout=15)
+        fresh = {}
+        if rc == 127:                      # 没有 systemctl（非 systemd 环境 / 开发机）
+            fresh = {n: "unknown" for n in stale}
+        else:
+            # 归一化：裸名和带 .service 的名字映射到同一个 key（见 _norm_unit）
+            found = parse_systemctl_show(out)
+            for n in stale:
+                # 之前这里用原始 n 查表，模块若把服务名写成 "foo.service" 就恒查不到（key 是 "foo"），
+                # 状态永远显示「未知」。用归一化后的名字回查即可。
+                info = found.get(_norm_unit(n))
+                # 没装的单元 systemctl 也会回一段（LoadState=not-found、ActiveState=inactive），
+                # 不能当成「未运行」标红，按「查不到」处理（前端灰点）
+                if not info or info.get("LoadState") == "not-found":
+                    fresh[n] = "unknown"
+                    continue
+                fresh[n] = _classify(info["ActiveState"], info["Type"], info["Result"])
+        with _SVC_CACHE_LOCK:
+            for n, v in fresh.items():
+                _SVC_CACHE[n] = (now, v)
+    res.update(fresh)
     return res
 
 
@@ -443,6 +453,8 @@ def restart_service(name):
     bust_services_cache()  # 状态刚被改变，清缓存，前端下一次轮询立即看到新状态
     if rc != 0 and "not found" in out.lower():
         return False, "服务 %s 不存在" % name
+    if rc != 0:
+        return False, out.strip() or "服务 %s 重启失败（退出码 %s）" % (name, rc)
     return True, out.strip() or "已重启"
 
 
@@ -772,6 +784,7 @@ def list_disks():
     if not os.path.isdir(base):
         return out
     hdd_temps = {}
+    power = {}
     fs = read_kv(FAN_STATUS) if os.path.exists(FAN_STATUS) else {}
     try:
         if time.time() - os.path.getmtime(FAN_STATUS) > 90:
@@ -786,6 +799,9 @@ def list_disks():
         name, _, value = item.partition("=")
         if value.isdigit():
             hdd_temps[name] = value
+            power[name] = False
+        elif value == "standby":
+            power[name] = True
     stats = read_diskstats()
     now = time.time()
     try:
@@ -818,6 +834,7 @@ def list_disks():
             "busy_pct": busy_pct,
             "rd_bps": rd_bps,
             "wr_bps": wr_bps,
+            "_power": power.get(name),
         })
     return out
 
@@ -879,6 +896,9 @@ def _fan_fields(fan_status):
         "fan_level": fan_status.get("level", ""),
         "fan_duty": fan_status.get("duty_pct", "") or fan_status.get("level", ""),
         "fan_mode": fan_status.get("mode", ""),
+        "fan_manual": fan_status.get("manual_duty", ""),
+        "fan_manual_ok": NATIVE_ENABLED,
+        "fan_guard": fan_status.get("guard_reason", ""),
         "fan_source": fan_status.get("hdd_source", ""),
         "disks": fan_status.get("disks", ""),
     }
@@ -951,7 +971,40 @@ def collect_sensor():
     return st
 
 
+_STANDBY_CACHE = {}
+_STANDBY_TTL = 20
+
+
+def _probe_standby(d):
+    """SG_IO CHECK POWER MODE, at most once per disk every 20 s: under load the command waits
+    for the disk queue to drain, so probing on every 1 s poll stalls /api/sensor."""
+    name, now = d["name"], time.time()
+    hit = _STANDBY_CACHE.get(name)
+    if hit and now - hit[0] < _STANDBY_TTL:
+        return hit[1]
+    try:
+        value = hwinfo.disk_is_standby("/dev/" + name, name, d["rotational"])
+    except Exception:
+        value = None
+    _STANDBY_CACHE[name] = (now, value)
+    return value
+
+
+_SYS_SNAPSHOT = {"t": 0.0, "v": None}
+_SYS_LOCK = threading.Lock()
+
+
 def _sys_fields():
+    """Rates are deltas against module-level baselines shared by every tab and the alert thread;
+    reuse one snapshot for 1 s so no caller measures over a fraction-of-a-second window."""
+    with _SYS_LOCK:
+        now = time.monotonic()
+        if _SYS_SNAPSHOT["v"] is None or now - _SYS_SNAPSHOT["t"] >= 1.0:
+            _SYS_SNAPSHOT["v"], _SYS_SNAPSHOT["t"] = _collect_sys_fields(), now
+        return copy.deepcopy(_SYS_SNAPSHOT["v"])
+
+
+def _collect_sys_fields():
     """系统资源快照：内存、CPU 占用、负载、网络速率、磁盘清单。
     挂在 /api/sensor（10 秒轮询）上：全是读 /proc、/sys 的文件 IO，不起进程
     （HW_SPEC 硬规则：这个端点不能有子进程、不能碰 SMART，目标 < 50ms）。
@@ -968,11 +1021,9 @@ def _sys_fields():
     cpu_temp = _thermal_zone_cpu_temp()
     disk_list = list_disks()
     for d in disk_list:
-        try:
-            d["standby"] = hwinfo.disk_is_standby("/dev/" + d["name"], d["name"], d["rotational"])
-        except Exception:
-            d["standby"] = None
-        if d["standby"] is not False:
+        known = d.pop("_power", None)
+        d["standby"] = known if known is not None else _probe_standby(d)
+        if d["standby"] is True:
             d["temp"] = None
     # read_cpu_pct() 内部靠一份模块级基线算「两次采样之间」的差值——同一次轮询里
     # 调两遍，第二遍会把第一遍刚更新的基线当成「上一次」，算出几乎为 0 的占用率。
@@ -1626,6 +1677,7 @@ def op_set_fan(params):
     if not os.path.exists(ETC_FAN):
         return False, "未找到 %s，风扇服务可能未安装" % ETC_FAN
 
+    _clear_fan_manual()
     write_kv(ETC_FAN, {
         "TEMP_PROFILE": profile,
         "HDD_T1": str(h_t1), "HDD_T2": str(h_t2), "HDD_T3": str(h_t3), "HDD_T4": str(h_t4),
@@ -1657,7 +1709,7 @@ def op_set_fan(params):
 def _fan_script_has(marker):
     """设备上装的 fan-control.sh 是不是认得某个新功能（按脚本里有没有这个变量名判断）。"""
     if NATIVE_ENABLED:
-        return NATIVE.capabilities()["ready"] and marker in ("force_until", "RELOAD_FILE", "GUARD_CONF")
+        return NATIVE.capabilities()["ready"] and marker in ("force_until", "RELOAD_FILE")
     try:
         with open(FAN_SCRIPT, "r", encoding="utf-8", errors="ignore") as f:
             return marker in f.read()
@@ -1668,6 +1720,43 @@ def _fan_script_has(marker):
 FAN_SCRIPT = os.environ.get("S2_FAN_SCRIPT", "/usr/local/bin/fan-control.sh")
 FAN_FORCE = os.path.join(FAN_RUN_DIR, "force_until")
 FAN_RELOAD = os.path.join(FAN_RUN_DIR, "reload")
+FAN_MANUAL = os.path.join(FAN_RUN_DIR, "manual_duty")
+
+
+def _clear_fan_manual():
+    try:
+        os.unlink(FAN_MANUAL)
+    except FileNotFoundError:
+        pass
+
+
+def op_fan_manual(params):
+    """手动转速：duty=30–100 固定转速，duty=0/空 回到温控曲线。
+
+    写在运行目录（/run，重启即失效）。原生控制器每 2 秒读一次；超温保护、
+    传感器失效和曲线到达全速点时仍强制 100%，手动只能在安全范围内调低或调高。
+    """
+    raw = params.get("duty")
+    duty = 0 if raw in (None, "", 0, "0", "auto") else _as_int(raw, -1)
+    if duty and not 30 <= duty <= 100:
+        return False, "手动转速须在 30–100% 之间"
+    if not NATIVE_ENABLED:
+        return False, "当前风扇由旧版脚本控制，不支持手动转速；请先完成设备树升级启用原生控制"
+    try:
+        if not duty:
+            _clear_fan_manual()
+            return True, "已恢复温控曲线"
+        ok, message = apply_native_settings("手动转速")
+        if not ok:
+            return False, message
+        os.makedirs(FAN_RUN_DIR, exist_ok=True)
+        tmp = FAN_MANUAL + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("%d\n" % duty)
+        os.replace(tmp, FAN_MANUAL)
+    except OSError as e:
+        return False, msg_detail("写入手动转速失败", str(e))
+    return True, "风扇已设为手动 %d%%，约 2 秒内生效；超温时仍会自动全速" % duty
 
 
 def legacy_controller_available():
@@ -1802,6 +1891,7 @@ OPS = {
     "set_led_override": op_set_led_override,
     "set_fan": op_set_fan,
     "fan_test": op_fan_test,
+    "fan_manual": op_fan_manual,
     "set_beep": op_set_beep,
     "beep_test": op_beep_test,
     "set_power_schedule": op_set_power_schedule,
@@ -1814,15 +1904,6 @@ OPS = {
 
 
 def dispatch(op, params):
-    if op == "integration_status":
-        try:
-            units = services_state([s2native.SERVICE, "fnos-s2-dtb-guard.path", "fnos-s2-led-boot", "fnos-s2-led-shutdown"])
-            return True, {"backend": "native" if NATIVE_ENABLED else "legacy" if legacy_controller_available() else "unavailable",
-                "native": NATIVE.capabilities(), "dtb": s2dtb.state(NATIVE.root), "services": units,
-                "lights_enabled": (NATIVE.conf/"led-beautify.enabled").exists(),
-                "rollback_available": (NATIVE.root/"var/lib/fnos-s2/last-dtb-backup").is_file()}
-        except (OSError, ValueError):
-            return False, "无法读取设备树与原生硬件状态，请检查权限"
     if op in s2hardware.OPS:
         return s2hardware.dispatch(_sys.modules[__name__], op, params)
     fn = OPS.get(op)

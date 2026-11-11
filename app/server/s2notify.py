@@ -1,7 +1,62 @@
 """Standalone email/Webhook delivery, retaining existing notification settings."""
 import contextlib, http.client, ipaddress, json, os, smtplib, socket, sqlite3, ssl, threading, time, urllib.parse
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 from s2validation import Problem, integer
+
+SEND_ERRORS = (OSError, ValueError, http.client.HTTPException, smtplib.SMTPException)
+LEVEL_NAMES = {"crit": "严重", "warn": "警告", "ok": "已恢复", "info": "提示"}
+
+
+def describe_error(error):
+    """Turn a delivery exception into an actionable message without echoing credentials."""
+    if isinstance(error, Problem):
+        return str(error)
+    if isinstance(error, smtplib.SMTPAuthenticationError):
+        return "邮箱认证失败：账号或授权码错误。QQ / 163 / 126 等邮箱需在网页版开启 SMTP 服务，并填写授权码而不是登录密码"
+    if isinstance(error, smtplib.SMTPNotSupportedError):
+        return "服务器不支持 STARTTLS，请把加密方式改为 SSL（端口 465）"
+    if isinstance(error, smtplib.SMTPSenderRefused):
+        return "发件地址被服务器拒绝：多数邮箱要求发件地址与登录账号一致"
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        return "收件地址被服务器拒绝，请核对收件地址"
+    if isinstance(error, smtplib.SMTPServerDisconnected):
+        return "服务器断开连接：端口与加密方式可能不匹配（465 用 SSL，587 用 STARTTLS）"
+    if isinstance(error, smtplib.SMTPResponseException):
+        return "邮件服务器拒绝投递：%s" % error.smtp_code
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return "服务器证书校验失败，请核对服务器地址"
+    if isinstance(error, ssl.SSLError):
+        return "TLS 握手失败：端口与加密方式可能不匹配（465 用 SSL，587 用 STARTTLS）"
+    if isinstance(error, socket.gaierror):
+        return "无法解析服务器地址，请核对地址或设备的 DNS 设置"
+    if isinstance(error, ConnectionRefusedError):
+        return "连接被拒绝：端口可能错误"
+    if isinstance(error, (socket.timeout, TimeoutError)):
+        return "连接超时：请核对服务器地址和端口，并确认设备能访问外网"
+    if isinstance(error, UnicodeError):
+        return "账号或授权码包含服务器不支持的字符"
+    return "投递失败（%s），请检查设置和设备网络" % type(error).__name__
+
+
+def mail_security(config):
+    security = config.get("security")
+    if security in ("ssl", "starttls"):
+        return security
+    return "ssl" if config.get("port") == 465 else "starttls"
+
+
+def event_text(event):
+    level = LEVEL_NAMES.get(event.get("level"), "")
+    lines = [str(event.get("title") or "设备告警")]
+    if level:
+        lines.append("级别：" + level)
+    if event.get("ts"):
+        lines.append("时间：" + time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(event["ts"])))
+    if event.get("detail"):
+        lines.append("详情：" + str(event["detail"]))
+    lines.append("设备：" + socket.gethostname())
+    return "\n".join(lines)
 
 class NotificationStore:
     def __init__(self, directory):
@@ -93,10 +148,9 @@ class Notifier:
             deliveries = [dict(r) for r in db.execute("SELECT id,ts,status,attempts,error FROM deliveries ORDER BY id DESC LIMIT 100")]
         return {"config": public, "deliveries": deliveries}
 
-    def save_notifications(self, body):
-        if not isinstance(body.get("enabled", False), bool) or body.get("kind") not in ("webhook", "email"):
+    def build_config(self, body, old):
+        if not isinstance(body, dict) or not isinstance(body.get("enabled", False), bool) or body.get("kind") not in ("webhook", "email"):
             raise Problem("通知配置无效")
-        old = self.store.get("notifications", {})
         config = {"enabled": body.get("enabled", False), "kind": body["kind"]}
         if config["kind"] == "webhook":
             endpoint(body.get("url", ""))
@@ -114,6 +168,17 @@ class Notifier:
             retained = old.get("password", "") if config["host"] == old.get("host") and config["username"] == old.get("username") else ""
             config.update(port=integer(body.get("port", 587), 1, 65535),
                           password=str(body.get("password") or retained)[:512])
+            security = body.get("security")
+            if security not in (None, "", "ssl", "starttls"):
+                raise Problem("加密方式无效")
+            config["security"] = mail_security({"security": security, "port": config["port"]})
+            if not config["password"]:
+                raise Problem("请填写邮箱授权码")
+        return config
+
+    def save_notifications(self, body):
+        old = self.store.get("notifications", {})
+        config = self.build_config(body, old)
         if not old.get("enabled") and config["enabled"]:
             self.store.set("notify_cursor", self.alert_snapshot().get("last_id", 0))
         self.store.set("notifications", config)
@@ -144,11 +209,21 @@ class Notifier:
         else:
             message = EmailMessage()
             message["From"], message["To"] = config["sender"], config["recipient"]
-            message["Subject"] = "fnOS-S2 " + str(event.get("title", "设备告警")).replace("\n", " ")[:150]
-            message.set_content(json.dumps(event, ensure_ascii=False, indent=2))
-            with smtplib.SMTP(config["host"], config["port"], timeout=8) as smtp:
+            level = LEVEL_NAMES.get(event.get("level"))
+            title = str(event.get("title", "设备告警")).replace("\n", " ").replace("\r", " ")[:150]
+            message["Subject"] = "fnOS-S2 " + ("【%s】" % level if level else "") + title
+            message["Date"] = formatdate(localtime=True)
+            message["Message-ID"] = make_msgid(domain=config["sender"].rpartition("@")[2] or None)
+            message.set_content(event_text(event))
+            context = ssl.create_default_context()
+            if mail_security(config) == "ssl":
+                smtp = smtplib.SMTP_SSL(config["host"], config["port"], timeout=10, context=context)
+            else:
+                smtp = smtplib.SMTP(config["host"], config["port"], timeout=10)
+            with smtp:
                 check_address(smtp.sock.getpeername()[0])
-                smtp.starttls(context=ssl.create_default_context())
+                if mail_security(config) == "starttls":
+                    smtp.starttls(context=context)
                 smtp.login(config["username"], config["password"])
                 smtp.send_message(message)
 
@@ -171,20 +246,22 @@ class Notifier:
             try:
                 self.send_notification(config, json.loads(row["payload"]))
                 status, error = "sent", ""
-            except (OSError, ValueError, http.client.HTTPException, smtplib.SMTPException):
-                status, error = ("failed" if attempts >= 4 else "pending"), "连接、认证或投递失败，请检查设置"
+            except SEND_ERRORS as exc:
+                status, error = ("failed" if attempts >= 4 else "pending"), describe_error(exc)
             with self.store.db() as db:
                 db.execute("UPDATE deliveries SET status=?,attempts=?,next=?,error=? WHERE id=?", (status, attempts, self.clock() + min(3600, 30 * 2 ** attempts), error, row["id"]))
 
 
-    def send_test(self):
-        config=self.store.get("notifications",{})
-        if not config.get("kind"): raise Problem("请先保存通知设置")
-        event={"title":"测试通知", "detail":"fnOS-S2 告警通知连接测试"}
+    def send_test(self, body=None):
+        """Test the settings currently in the form when given, otherwise the saved ones."""
+        stored = self.store.get("notifications", {})
+        config = self.build_config(body, stored) if isinstance(body, dict) and body.get("kind") else stored
+        if not config.get("kind"): raise Problem("请先填写通知设置")
+        event={"title":"测试通知", "level":"info", "ts":int(self.clock()), "detail":"fnOS-S2 告警通知连接测试，收到即表示设置可用"}
         try:
             self.send_notification(config,event); status,error="sent",""
-        except (OSError, ValueError, http.client.HTTPException, smtplib.SMTPException):
-            status,error="failed","测试投递失败，请核对服务器、凭据及设备网络"
+        except SEND_ERRORS as exc:
+            status,error="failed","测试投递失败：" + describe_error(exc)
         with self.store.db() as db:
             db.execute("INSERT INTO deliveries(event_id,ts,payload,status,attempts,next,error) VALUES (NULL,?,?,?,?,?,?)",(self.clock(),json.dumps(event),status,1,self.clock(),error))
         if error: raise Problem(error,502)
