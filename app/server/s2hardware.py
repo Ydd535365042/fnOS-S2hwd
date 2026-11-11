@@ -51,8 +51,16 @@ def _apply_system(hw):
     enabled = schedule.read_config(hw.APP_SCHED_CONF)["enabled"]
     if hw.NATIVE_ENABLED and boot_unit(hw, enabled):
         return "开机计划服务设置失败"
+    if hw.NATIVE_ENABLED and enabled:
+        # Apply through the service, not by calling the script directly: the service has to be running
+        # for its stop hook to re-arm the RTC boot alarm when the box is shut down any other way.
+        if hw.run(["systemctl", "restart", "s2-power-schedule.service"], timeout=60)[0]:
+            return "系统应用失败"
+        return ""
     if os.path.exists(hw.SCHED_APPLY_BIN) and hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)[0]:
         return "系统应用失败"
+    if hw.NATIVE_ENABLED:
+        hw.run(["systemctl", "stop", "s2-power-schedule.service"], timeout=30)
     return ""
 
 

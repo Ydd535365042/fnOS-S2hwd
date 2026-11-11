@@ -1659,20 +1659,22 @@
   let fanManualTarget = null;   // 正在拖 / 刚设的手动目标值：设备确认之前读数先按它显示
   let fanAutoPending = false;   // 刚点了「恢复自动」、设备还在报手动：先按预估的自动转速显示
 
-  /* 控制器在自动模式下会给出的转速，与 s2native.fan_tick 同一套规则：两路曲线取高、
-     降温 2℃ 回差内保持起转转速、硬盘温度读不到时保底 30%。点「恢复自动」后先按它显示，
-     读数不会先跳回手动值、等下一次采样才变过去。 */
+  /* 自动模式此刻会给出的转速。控制器每次采样都会算好（fan_auto_duty，手动时也照算，含降温回差的状态），
+     点「恢复自动」后先按它显示，读数不会先跳回手动值、等下一次采样才变过去。
+     旧控制器没有这个字段时只按两条曲线估：回差是否生效取决于曲线之前有没有起转，页面上判断不了。 */
   function autoDutyGuess(s) {
+    const known = num(s.fan_auto_duty);
+    if (known !== null) return known;
     const cpu = num(s.cpu_temp), hdd = num(s.hdd_max_temp) || null;
     let duty = Math.max(curveDuty(cpu, fanCurve.cpu) || 0, curveDuty(hdd, fanCurve.hdd) || 0);
-    if (!duty && (num(s.fan_duty) || 0) > 0) {
-      const near = [["cpu", cpu], ["hdd", hdd]]
-        .filter(([k, t]) => t !== null && curveDuty(t + 2, fanCurve[k]) > 0)
-        .map(([k]) => fanCurve[k].d1);
-      if (near.length) duty = Math.max(...near);
-    }
     if (s.fan_source === "unknown") duty = Math.max(duty, 30);
     return duty;
+  }
+  // 降温回差：控制器报「hdd:40」= 硬盘曾到起转点、正在降温，降到 40℃ 以下才停
+  let fanHold = null;
+  function parseHold(v) {
+    const m = /^(cpu|hdd):(\d+)$/.exec(String(v || ""));
+    return m ? { k: m[1], below: +m[2] } : null;
   }
 
   // /api/state 的 conf.fan（KEY=VALUE 字符串）→ {hdd, cpu} 曲线；缺的格子用出厂值，硬盘 T4 夹到上限
@@ -1775,8 +1777,11 @@
     const cpuD = curveDuty(cpu, fanCurve.cpu) || 0;
     const hddD = curveDuty(hdd, fanCurve.hdd) || 0;
     if (!cpuD && !hddD) {
-      // 两路都没到起转点却在转：硬盘温度读不到时保底转速，或降温时的 2℃ 回差
-      if (duty > 0) return s.fan_source === "unknown" ? "硬盘温度未知 · 保底转速" : "降温回差 · 保持起转转速";
+      // 两路都没到起转点却在转：硬盘温度读不到时保底转速，或曲线起转后的 2℃ 降温回差
+      const hold = parseHold(s.fan_hold);
+      if (duty > 0 && hold) return "降温中 · " + (hold.k === "cpu" ? "处理器" : "硬盘") + "降到 " + hold.below + "℃ 以下停转";
+      if (duty > 0 && s.fan_source === "unknown") return "硬盘温度未知 · 保底转速";
+      if (duty > 0 && s.fan_hold === undefined) return "降温回差 · 保持起转转速";   // 旧控制器不报回差来源
       return "未达起转温度";
     }
     const by = cpuD >= hddD ? "处理器" : "硬盘";
@@ -1813,6 +1818,7 @@
     const spin = (fanPeriod(duty || 0) || 2.4).toFixed(2) + "s";
     if (ovFanSvg.dataset.spin !== spin) { ovFanSvg.dataset.spin = spin; ovFanSvg.style.setProperty("--spin", spin); }
     ovFanSvg.classList.toggle("still", !duty);
+    fanHold = sensor.fan_mode === "auto" ? parseHold(sensor.fan_hold) : null;
     renderFanRows(cpu, hdd);
     syncFanManual(sensor);
 
@@ -1875,7 +1881,9 @@
       e.t.textContent = t === null ? "--" : Math.round(t) + "℃";
       e.a.textContent = a.t1 + " / " + a.t2 + " / " + a.t3 + " / " + a.t4 + "℃";
       e.a.title = "四个锚点对应转速 " + a.d1 + " / " + a.d2 + " / " + a.d3 + " / " + a.d4 + "%";
-      e.d.textContent = need[e.k] === null ? "无读数" : need[e.k] === 0 ? "未达起转" : "需 " + need[e.k] + "%";
+      e.d.textContent = need[e.k] === null ? "无读数"
+        : need[e.k] === 0 ? (fanHold && fanHold.k === e.k ? "降温中 · " + fanHold.below + "℃ 停" : "未达起转")
+        : "需 " + need[e.k] + "%";
     });
     const lead = need.cpu === null && need.hdd === null ? "" : (need.cpu || 0) >= (need.hdd || 0) ? "cpu" : "hdd";
     fanRowEls.forEach((e) => e.row.classList.toggle("is-lead", e.k === lead && need[e.k] > 0));
@@ -2755,13 +2763,14 @@
   }
 
   // 跟随一个正在设备上跑的任务，把输出接到执行日志。启动脚本和「页面重开后接回」共用。
-  function followJob(job, cancellable) {
+  function followJob(job, cancellable, onDone) {
     runJob = job;
     // 内置模块的安装任务不能中途终止（没有可终止的进程组），不摆一个点了必然失败的按钮
     termStop.hidden = cancellable === false;
     termStop.disabled = false;
     let seen = 0, missFrom = 0, missNoted = false;
-    const finish = () => { termStop.hidden = true; setRunning(false); stopPolling(); };
+    // 任务结束后立刻刷新状态：.run 安装包、模块安装都会改脚本库和已安装模块，别等 60 秒的定时刷新
+    const finish = (ok) => { termStop.hidden = true; setRunning(false); stopPolling(); refreshState(); if (onDone) onDone(ok); };
     const poll = async () => {
       if (!runJob) return;
       let r;
@@ -2779,7 +2788,7 @@
         termWrite("读取输出失败：" + err.message + "。脚本可能仍在设备上运行，稍后刷新页面再看", "err");
         termStatus.textContent = "失联";
         termStatus.style.color = "var(--term-err)";
-        finish();
+        finish(false);
         return;
       }
       if (missFrom) { termWrite("已重新连上", "dim"); missFrom = 0; missNoted = false; }
@@ -2800,7 +2809,7 @@
           unknown ? "dim" : ok ? "ok" : "err");
         termStatus.textContent = unknown ? "已结束" : ok ? "已完成" : r.rc === 130 ? "已停止" : "失败";
         termStatus.style.color = unknown ? "var(--term-warn)" : ok ? "var(--term-ok)" : "var(--term-err)";
-        finish();
+        finish(ok);
         return;
       }
       runTimer = setTimeout(poll, 700);
@@ -3305,7 +3314,8 @@
 
     setHtmlIfChanged(list, MODULES.map((m) => {
       // module.conf 是 .run 安装包写进来的，标题/说明/服务名同样不可信
-      const svc = Object.keys(m.services || {}).map((k) => {
+      // 没装的模块，它声明的服务当然查不到：不摆一排「未知」，看着像出错
+      const svc = Object.keys(m.services || {}).filter((k) => m.enabled || m.services[k] !== "unknown").map((k) => {
         const st = m.services[k];
         return '<span class="svc' + (st === "active" || st === "done" ? " on" : "") + '" title="' + esc(k) + '">' +
           esc(zhSvc(st)) + "</span>";
@@ -3331,8 +3341,8 @@
           '<button class="btn sm' + (m.enabled ? "" : " primary") + '" data-act="apply"' + (m.enabled && !m.bundled ? " disabled" : "") + ">" + (m.bundled ? (m.enabled ? "更新/重装" : "安装") : "启用") + "</button>" +
           (m.bundled ? '<button class="btn sm" data-act="status">查看状态</button>' : "") +
           '<button class="btn sm" data-act="remove"' + (m.enabled ? "" : " disabled") + ">停用</button>" +
-          // 内置完整包「卸载」会把包本身删掉，之后只能重装应用才回来；内置包只给停用
-          (m.bundled ? "" : '<button class="btn sm danger" data-act="uninstall">卸载</button>') +
+          // 内置完整包卸载时只撤掉装进系统的东西，安装包留在列表里，随时能重新安装
+          '<button class="btn sm danger" data-act="uninstall"' + (m.bundled && !m.enabled ? " disabled" : "") + ">卸载</button>" +
         "</div>" +
       "</div>";
     }).join(""));
@@ -3343,6 +3353,7 @@
   async function modAction(id, act, btn) {
     const m = MODULES.find((x) => x.id === id);
     if (!m || modPending) return;
+    if (running && act !== "status") { toast("执行日志里还有任务在运行，等它结束再操作模块", "err"); return; }
     if (m.bundled && act === "apply") {
       const approved = await reviewScript({name: m.title, source: "内置完整包 " + m.version, changed: true,
         sha256: m.sha256 || "", content: m.desc,
@@ -3374,9 +3385,32 @@
     let res;
     try {
       res = await hw("patch", { id: id, action: act });
-    } finally {
-      modPending = false;
+    } catch (e) {
+      res = { ok: false, msg: String(e && e.message || e) };
     }
+    // 内置完整包在设备后台执行：输出实时滚进执行日志，结束后刷新列表。
+    // 页面中途刷新也没关系，打开时会接回这个任务
+    if (res.ok && res.data && res.data.job) {
+      // 卸载按钮的「确认」标记要先撤掉：带着它，列表会以为还在等第二次点击而不重画
+      if (act === "uninstall") { btn.dataset.armed = "0"; btn.classList.remove("armed"); }
+      setRunning(true);
+      setTermTarget(m.title);
+      termStatus.textContent = "运行中";
+      termStatus.style.color = "var(--term-warn)";
+      termReset("");
+      if (window.matchMedia("(max-width:760px)").matches) {
+        const termCard = document.querySelector(".term-card");
+        if (termCard) termCard.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+      followJob(res.data.job, false, (ok) => {
+        modPending = false;
+        document.getElementById("mod-list").__lastHtml = null;
+        renderModules();
+        toast(m.title + (ok ? "：操作完成" : "：操作失败，详情见执行日志"), ok ? "ok" : "err");
+      });
+      return;
+    }
+    modPending = false;
     btn.disabled = false;
     btn.textContent = label;
     if (act === "uninstall") {

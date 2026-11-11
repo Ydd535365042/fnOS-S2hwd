@@ -71,12 +71,20 @@ def next_event(config, kind, now=None):
     return None
 
 
-def due(config, now=None):
+def due(config, now=None, grace=600):
+    """Is a scheduled shutdown due now? The timer may fire a little late (AccuracySec, a busy system),
+    so anything within `grace` seconds after today's shutdown time counts; an exact minute match
+    silently skipped the day whenever the timer slipped into the next minute."""
     now = time.time() if now is None else now
+    if not config["enabled"] or not config["shutdown_time"] or now < config["maintenance_until"]:
+        return False
     current = dt.datetime.fromtimestamp(now)
-    return (config["enabled"] and now >= config["maintenance_until"]
-            and current.weekday() in config["weekdays"] and current.date().isoformat() not in config["skip_dates"]
-            and current.strftime("%H:%M") == config["shutdown_time"])
+    hour, minute = map(int, config["shutdown_time"].split(":"))
+    target = dt.datetime.combine(current.date(), dt.time(hour, minute))
+    if current < target:                       # just after midnight for a 23:59 shutdown: yesterday's slot
+        target -= dt.timedelta(days=1)
+    return (0 <= (current - target).total_seconds() <= grace
+            and target.weekday() in config["weekdays"] and target.date().isoformat() not in config["skip_dates"])
 
 
 if __name__ == "__main__":

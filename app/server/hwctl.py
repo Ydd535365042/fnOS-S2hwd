@@ -26,6 +26,7 @@ import subprocess
 import signal
 import threading
 import time
+import uuid
 
 # hwinfo 是同目录的兄弟模块。server.py 和 s2hw-agent.py 在 import hwctl 之前都会
 # 把 server 目录插进 sys.path，所以多数情况下普通 import 就够用；但测试里有的
@@ -48,7 +49,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.1.2"
+APP_VER = "1.1.3"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -934,6 +935,8 @@ def _fan_fields(fan_status):
         "fan_duty": fan_status.get("duty_pct", "") or fan_status.get("level", ""),
         "fan_mode": fan_status.get("mode", ""),
         "fan_manual": fan_status.get("manual_duty", ""),
+        "fan_auto_duty": fan_status.get("auto_duty", ""),
+        "fan_hold": fan_status.get("hold", ""),
         "fan_manual_ok": NATIVE_ENABLED,
         "fan_guard": fan_status.get("guard_reason", ""),
         "fan_source": fan_status.get("hdd_source", ""),
@@ -1433,7 +1436,7 @@ def _module_argv(script, sub):
     """构造执行模块脚本的 argv。可执行且有正常 shebang 才直接跑，否则交给 bash
     （.run 常见无 +x）。Windows 上 os.access(X_OK) 对任何文件都为真，一律走 bash。"""
     direct = os.name != "nt" and os.access(script, os.X_OK) and _has_shebang(script)
-    head = [script] if direct else ["bash", script]
+    head = [script] if direct else [os.environ.get("S2_BASH") or "bash", script]
     return head + [sub]
 
 
@@ -1495,6 +1498,93 @@ def _run_module(script, sub, timeout=30):
         return code, stream.read()[-131072:]
 
 
+_MODULE_JOB_LOCK = threading.Lock()
+_MODULE_JOB = {"id": None}
+
+
+def _start_module_job(m, action):
+    """内置完整包的安装 / 更新 / 停用 / 卸载最长要几分钟：放到后台跑，立刻把任务号交给页面。
+    输出写进和脚本任务同一个任务目录，页面用 /api/script/poll 实时看日志，结束后再刷新模块列表。
+    以前整个过程卡在一个请求里：中途被浏览器或代理断开，页面报失败、列表不刷新，安装却还在继续。"""
+    directory = os.path.join(VAR_DIR, "jobs")
+    with _MODULE_JOB_LOCK:
+        if _MODULE_JOB["id"]:
+            return False, "另一个模块操作正在进行，请等它完成"
+        identifier = uuid.uuid4().hex
+        _MODULE_JOB["id"] = identifier
+    names = {"apply": "安装 / 更新", "remove": "停用", "uninstall": "卸载"}
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        if os.path.islink(directory):
+            raise OSError("任务目录无效")
+        s2security.atomic_text(os.path.join(directory, identifier + ".meta"), json.dumps({
+            "name": "%s · %s" % (m["title"], names[action]), "timeout": 900, "cancellable": False,
+            "kind": "module", "module": m["id"]}, ensure_ascii=False), mode=0o600)
+        # 任务由控制台进程里的线程执行，记控制台自己的进程号：控制台重启时任务一并中断，页面显示「已结束」
+        s2security.atomic_text(os.path.join(directory, identifier + ".pid"), str(os.getpid()), mode=0o600)
+        with open(os.path.join(directory, identifier + ".log"), "x", encoding="utf-8") as stream:
+            stream.write("$ %s · %s\n" % (m["title"], names[action]))
+        os.chmod(os.path.join(directory, identifier + ".log"), 0o600)
+    except OSError as error:
+        with _MODULE_JOB_LOCK:
+            _MODULE_JOB["id"] = None
+        return False, msg_detail("无法创建模块任务", str(error))
+
+    def work():
+        log = os.path.join(directory, identifier + ".log")
+        code = 1
+        try:
+            steps = m["enable"] if action == "apply" else m["disable"]
+            for step in steps:
+                code = _stream_module(m["script"], step, log, timeout=600)
+                if code:
+                    break
+            if action == "uninstall" and not code:
+                with open(log, "a", encoding="utf-8") as stream:
+                    for line in _cleanup_module(m, keep_dir=True):
+                        stream.write(line + "\n")
+            with open(log, "a", encoding="utf-8") as stream:
+                stream.write("\n%s\n" % ("完成" if not code else "失败（退出码 %d），请查看上方日志" % code))
+        except Exception as error:  # noqa: BLE001 — the job must always end with a result file
+            code = 1
+            try:
+                with open(log, "a", encoding="utf-8") as stream:
+                    stream.write("\n模块任务异常：%s\n" % error)
+            except OSError:
+                pass
+        finally:
+            bust_services_cache()
+            try:
+                s2security.atomic_text(os.path.join(directory, identifier + ".rc"), "%d\n" % (code if code >= 0 else 128 - code), mode=0o600)
+            except OSError:
+                pass
+            with _MODULE_JOB_LOCK:
+                _MODULE_JOB["id"] = None
+
+    threading.Thread(target=work, name="s2-module-" + m["id"], daemon=True).start()
+    return True, {"job": identifier}
+
+
+def _stream_module(script, sub, log, timeout):
+    """跑模块脚本的一步，输出边跑边追加进任务日志。返回退出码。"""
+    with open(log, "a", encoding="utf-8") as output:
+        process = subprocess.Popen(_module_argv(script, sub), stdout=output, stderr=subprocess.STDOUT,
+                                   stdin=subprocess.DEVNULL, start_new_session=os.name == "posix")
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try: os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+            else:
+                process.terminate()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait()
+            output.write("\n模块操作超时，已终止，请检查执行结果后重试\n")
+            return 124
+
+
 def op_patch(params):
     """补丁模块操作。
 
@@ -1503,6 +1593,7 @@ def op_patch(params):
              = apply   按 ENABLE 序列启用
              = remove  按 DISABLE 序列停用
              = uninstall 彻底卸载（还原系统改动 + 删服务/规则 + 删目录）
+    内置完整包的 apply / remove / uninstall 在后台执行，立即返回 {job}。
     """
     mid = str(params.get("id") or "").strip()
     action = str(params.get("action") or "status").strip()
@@ -1512,6 +1603,10 @@ def op_patch(params):
     if not m:
         return False, "未知补丁模块：%s" % mid
 
+    if m.get("bundled") and action in ("apply", "remove", "uninstall"):
+        if not m["script"]:
+            return False, "该模块未绑定可执行脚本"
+        return _start_module_job(m, action)
     if action == "uninstall":
         return _remove_module(m)
     if action == "status":
@@ -1559,6 +1654,14 @@ def _remove_module(m):
                 return False, msg_detail("还原失败，已中止卸载", "；".join(msgs))
             msgs.append((out or "").strip() or ("还原 %s 完成" % a))
 
+    msgs.extend(_cleanup_module(m, keep_dir=False))
+    return True, "；".join(msgs) or "模块已卸载"
+
+
+def _cleanup_module(m, keep_dir):
+    """停用并删除模块随附的服务 / 规则文件。内置完整包保留自己的目录（keep_dir），
+    卸载后列表里还在、随时能重新安装；用户自己装的模块连目录一起删。"""
+    msgs = []
     for s in m.get("services") or []:
         if not MODULE_UNIT_RE.match(s):
             continue
@@ -1581,10 +1684,15 @@ def _remove_module(m):
     run(["udevadm", "control", "--reload-rules"], timeout=20)
 
     mod_dir = os.path.join(PATCH_DIR, m["id"])
-    if _inside(PATCH_DIR, mod_dir) and os.path.isdir(mod_dir):
+    if keep_dir:
+        marker = os.path.join(mod_dir, "enabled")
+        if os.path.isfile(marker) and not os.path.islink(marker):
+            os.remove(marker)
+        msgs.append("已卸载，安装包保留在列表中，可随时重新安装")
+    elif _inside(PATCH_DIR, mod_dir) and os.path.isdir(mod_dir):
         shutil.rmtree(mod_dir, ignore_errors=True)
         msgs.append("模块目录已删除: %s" % mod_dir)
-    return True, "；".join(msgs) or "模块已卸载"
+    return msgs
 
 
 # ---------------- 各 op 实现 ----------------

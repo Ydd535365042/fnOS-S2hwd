@@ -113,6 +113,7 @@ apply() {
 Description=S2 定时关机定时器
 [Timer]
 OnCalendar=*-*-* ${SHUTDOWN_TIME}:00
+AccuracySec=1s
 Persistent=false
 [Install]
 WantedBy=timers.target"

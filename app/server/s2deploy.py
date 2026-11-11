@@ -53,6 +53,10 @@ class Deployment(Activation):
             files["server/s2bundle.py#"+ident] = base + "runner.py"
         # Validate all sources before replacing any installed file.
         content = {target: (source/name.split("#")[0]).read_bytes() for name,target in files.items()}
+        # The shutdown timer carries the user's time once s2-power-schedule.sh has written it;
+        # the packaged copy (03:00) must not overwrite it on upgrade.
+        timer = "etc/systemd/system/s2-power-shutdown.timer"
+        if (self.root/timer).exists(): content.pop(timer)
         s2dtb.validate(content["usr/local/lib/fnos-s2/"+s2dtb.NAME])
         tracked = list(content) + ["etc/s2-power-schedule.conf", "etc/s2hwctl/backend", "etc/s2hwctl/fan.conf"]
         previous = {name: (s2dtb.read_regular(self.root/name, optional=True), (self.root/name).stat().st_mode & 0o777 if (self.root/name).exists() else None) for name in tracked}
@@ -67,7 +71,11 @@ class Deployment(Activation):
             if not schedule.exists(): s2dtb.atomic(schedule, b"ENABLED=0\nSHUTDOWN_TIME=\nBOOT_TIME=\n")
             self.system("daemon-reload")
             if self.native.capabilities()["ready"] or s2dtb.state(self.root)["prepared"]: self.system("enable", OWN)
-            if s2native.kv(schedule).get("ENABLED") == "1": self.system("enable", "s2-power-schedule.service")
+            if s2native.kv(schedule).get("ENABLED") == "1":
+                self.system("enable", "s2-power-schedule.service")
+                # Re-apply now, not at the next boot: the new scripts and units only take effect through apply,
+                # and the running service is what re-arms the RTC alarm on any later shutdown.
+                self.system("restart", "s2-power-schedule.service", required=False)
             if self.native.capabilities()["ready"]:
                 self.system("restart", OWN)
                 self.system("is-active", "--quiet", OWN)

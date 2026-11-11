@@ -62,6 +62,7 @@ class Native:
         self.temperature_reader = temperature_reader or disk.temperatures
         self.disk_at = None
         self.disks = {}
+        self.curve_on = False   # the temperature curve (not manual / test / start-up) is what keeps the fan spinning
         self.original_leds = {}
         self.persist_leds = persist_leds
         self.led_history = self.root/"var/lib/fnos-s2/led-original.json"
@@ -135,15 +136,19 @@ class Native:
         highest = max(temps, default=0)
         unknown = any(v != "standby" and (number(v) is None or not 0 < number(v) <= 120) for v in self.disks.values())
         config = kv(self.conf/"fan.conf")
-        reason = ""
+        reason, hold = "", ""
         try:
             duty = max(curve(cpu, config, "CPU"), curve(highest, config, "HDD"))
-            node = self.fan()
-            if duty == 0 and node and (number(read(node/"pwm1")) or 0) > 0:
-                # 2 ℃ hysteresis: keep spinning at the start duty of whichever source is still near its start point.
-                near = [int(config.get(prefix+"_D1", 30)) for prefix, temp in (("CPU", None if cpu is None else cpu+2), ("HDD", highest+2))
-                        if curve(temp, config, prefix) > 0]
-                if near: duty = max(near)
+            # 2 ℃ hysteresis, only after the curve itself started the fan. The actual PWM is no guide:
+            # it is also non-zero after start-up (full speed self-check), a full-speed test or manual control,
+            # and treating those as "cooling down" kept the fan at its start duty below the start temperature.
+            if duty == 0 and self.curve_on:
+                near = [(int(config.get(prefix+"_D1", 30)), prefix, temp) for prefix, temp in (("CPU", cpu), ("HDD", highest if temps else None))
+                        if temp is not None and curve(temp+2, config, prefix) > 0]
+                if near:
+                    duty, prefix, _ = max(near)
+                    hold = "%s:%d" % (prefix.lower(), int(config.get(prefix+"_T1", 60 if prefix == "CPU" else 42)) - 2)
+            self.curve_on = duty > 0
             hot = (cpu is not None and cpu >= int(config.get("CPU_T3", 72))) or highest >= int(config.get("HDD_T3", 52))
         except (ValueError, TypeError): duty, reason, hot = 100, "温控曲线无效", True
         if cpu is None: reason = "CPU 温度传感器无效"
@@ -153,17 +158,19 @@ class Native:
         force = number(read(self.runtime/"force_until")) or 0
         manual = number(read(self.runtime/"manual_duty"))
         manual = int(manual) if manual is not None and 30 <= manual <= 100 else None
+        auto_duty = max(duty, 30 if unknown else 0)     # what auto mode gives right now, shown when leaving manual
         if reason: duty, mode = 100, "protect"
         elif force > now: duty, mode = 100, "test"
         # Manual speed may run below the curve only while both sources are under their third anchor;
         # from there on the curve wins whenever it asks for more.
         elif manual is not None: duty, mode = (max(manual, duty) if hot else manual), "manual"
-        else: duty, mode = max(duty, 30 if unknown else 0), "auto"
+        else: duty, mode = auto_duty, "auto"
         actual = self.fan_write(duty)
         status = {"timestamp": str(int(now)), "mode": mode, "guard_reason": reason,
                   "cpu_temp": "" if cpu is None else str(cpu), "hdd_max_temp": str(highest) if temps else "",
                   "hdd_source": "unknown" if unknown else "smartctl", "duty_pct": str(actual), "level": str(actual),
                   "manual_duty": "" if manual is None else str(manual),
+                  "auto_duty": str(auto_duty), "hold": hold,
                   "disks": " ".join(f"{k}={v}" for k,v in self.disks.items())}
         return status
 
