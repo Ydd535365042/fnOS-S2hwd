@@ -167,9 +167,9 @@
                 <div class="bar"><span class="fill" id="ov-fan-fill" style="width:0%"></span></div>
                 <div class="fan-manual" id="ov-fan-manual">
                   <label for="fan-slider">手动转速</label>
-                  <input type="range" id="fan-slider" min="20" max="100" step="1" value="50" aria-describedby="fan-help">
+                  <input type="range" id="fan-slider" min="0" max="100" step="1" value="0" aria-describedby="fan-help">
                   <output id="fan-slider-val" for="fan-slider">自动</output>
-                  <button class="btn sm" id="fan-auto" type="button" disabled>恢复自动</button>
+                  <button class="btn sm" id="fan-auto" type="button" disabled title="回到温控曲线自动调速">恢复自动</button>
                 </div>
                 <dl class="fan-rows" id="ov-fan-rows">
                   <div class="fan-row" data-src="cpu"><dt>处理器</dt><dd class="t" id="ov-fan-cpu-t">--</dd><dd class="a" id="ov-fan-cpu-a">--</dd><dd class="d" id="ov-fan-cpu-d">--</dd></div>
@@ -197,10 +197,10 @@
                     </tr>
                     <tr data-curve="hdd">
                       <td>转速 %</td>
-                      <td><input type="number" data-k="d1" value="30" min="20" max="100" aria-label="硬盘起转转速"></td>
-                      <td><input type="number" data-k="d2" value="30" min="20" max="100" aria-label="硬盘第二锚点转速"></td>
-                      <td><input type="number" data-k="d3" value="70" min="20" max="100" aria-label="硬盘第三锚点转速"></td>
-                      <td><input type="number" data-k="d4" value="100" min="20" max="100" aria-label="硬盘全速点转速"></td>
+                      <td><input type="number" data-k="d1" value="30" min="30" max="100" aria-label="硬盘起转转速"></td>
+                      <td><input type="number" data-k="d2" value="30" min="30" max="100" aria-label="硬盘第二锚点转速"></td>
+                      <td><input type="number" data-k="d3" value="70" min="30" max="100" aria-label="硬盘第三锚点转速"></td>
+                      <td><input type="number" data-k="d4" value="100" min="30" max="100" aria-label="硬盘全速点转速"></td>
                     </tr>
                     <tr data-curve="cpu">
                       <td>处理器 ℃</td>
@@ -211,10 +211,10 @@
                     </tr>
                     <tr data-curve="cpu">
                       <td>转速 %</td>
-                      <td><input type="number" data-k="d1" value="30" min="20" max="100" aria-label="处理器起转转速"></td>
-                      <td><input type="number" data-k="d2" value="30" min="20" max="100" aria-label="处理器第二锚点转速"></td>
-                      <td><input type="number" data-k="d3" value="70" min="20" max="100" aria-label="处理器第三锚点转速"></td>
-                      <td><input type="number" data-k="d4" value="100" min="20" max="100" aria-label="处理器全速点转速"></td>
+                      <td><input type="number" data-k="d1" value="30" min="30" max="100" aria-label="处理器起转转速"></td>
+                      <td><input type="number" data-k="d2" value="30" min="30" max="100" aria-label="处理器第二锚点转速"></td>
+                      <td><input type="number" data-k="d3" value="70" min="30" max="100" aria-label="处理器第三锚点转速"></td>
+                      <td><input type="number" data-k="d4" value="100" min="30" max="100" aria-label="处理器全速点转速"></td>
                     </tr>
                   </tbody>
                 </table>
@@ -326,6 +326,7 @@
             <div class="card-hd">
               <h2>定时开关机</h2>
               <div class="spacer"></div>
+              <span class="sch-busy" id="ov-sch-busy" role="status" hidden><i class="spinner" aria-hidden="true"></i>正在应用…</span>
               <label class="switch">
                 <input type="checkbox" id="ov-sch-on" checked aria-label="启用定时开关机">
                 <span class="track"></span>

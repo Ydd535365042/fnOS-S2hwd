@@ -367,11 +367,9 @@ button:focus:not(:focus-visible),.seg button:focus:not(:focus-visible),.nav-item
 .fan-row.is-lead .d{color:var(--fg);font-weight:600}
 .fan-manual{display:grid;grid-template-columns:auto 1fr 3.2em auto;align-items:center;gap:10px;font-size:12.5px}
 .fan-manual label{color:var(--muted);white-space:nowrap}
-.fan-manual output{font-variant-numeric:tabular-nums;text-align:right;color:var(--muted);white-space:nowrap}
-.fan-manual.is-on output{color:var(--fg);font-weight:600}
+.fan-manual output{font-variant-numeric:tabular-nums;text-align:right;color:var(--fg);font-weight:600;white-space:nowrap}
 .fan-manual input[type=range]{width:100%;min-width:0;height:28px;margin:0;cursor:pointer;touch-action:pan-y}
 .fan-manual input[type=range]:disabled{cursor:not-allowed;opacity:.5}
-.fan-manual .btn:disabled{visibility:hidden}
 .flip-front>.help:last-child{margin-top:auto}
 .fan-svg{flex:none;width:48px;height:48px}
 .fan-svg .ring{fill:none;stroke:var(--line-2);stroke-width:2}
@@ -440,6 +438,9 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;bac
 .switch input:checked+.track{background:var(--accent)}
 .switch input:checked+.track::after{transform:translateX(17px)}
 #ov-sch-card.is-off{opacity:.62}
+.sch-busy{display:inline-flex;align-items:center;gap:6px;align-self:center;font-size:12px;color:var(--muted);white-space:nowrap}
+.sch-busy .spinner{width:12px;height:12px;border-radius:50%;border:2px solid var(--line-2);border-top-color:var(--accent);animation:spin .8s linear infinite}
+#ov-sch-card.is-applying .switch .track{opacity:.7}
 
 /* ---- 硬件信息：统计条 + 核心格 + 内存条 + 硬盘表 + 文件系统 / 阵列 + 网卡 ----
    密度与视觉语言对齐参考实现 JK（jkmon/web/app.css 的 .cstat / .kvl / .dk / .fsr / .pill / .bar / .nic 等），

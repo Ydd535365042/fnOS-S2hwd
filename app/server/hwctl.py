@@ -48,7 +48,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.0.9"
+APP_VER = "1.0.10"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -1676,7 +1676,7 @@ def op_set_fan(params):
 
     # 锚点必须严格递增，否则控制器里的插值分母会变 0 或算出负数。
     # 上限跟硬件走：机械盘 55℃ 起老化明显加快，CPU 80℃ 是这颗 SoC 的降频点。
-    # 转速四个点都可调：起转 20–100%，之后逐点不降，全速点最高 100%。
+    # 转速四个点都可调：起转 30–100%，之后逐点不降，全速点最高 100%。
     errs, values = [], {}
     for label, prefix, source, t_low, t_high, defaults in (
             ("硬盘", "HDD", hdd, 30, 55, (42, 48, 52, 55, 30, 30, 70, 100)),
@@ -1691,8 +1691,8 @@ def op_set_fan(params):
             errs.append("%s第三点温度必须大于第二点" % label)
         if t4 <= t3 or t4 > t_high:
             errs.append("%s全速点温度必须大于第三点且 ≤ %d℃" % (label, t_high))
-        if not 20 <= d1 <= 100:
-            errs.append("%s起转转速须在 20–100%%" % label)
+        if not 30 <= d1 <= 100:
+            errs.append("%s起转转速须在 30–100%%" % label)
         if not d1 <= d2 <= d3 <= d4 <= 100:
             errs.append("%s四个转速必须逐点不降且 ≤ 100%%" % label)
         if not NATIVE_ENABLED and (d1 != 30 or d4 != 100):
@@ -1752,19 +1752,28 @@ def _clear_fan_manual():
 
 
 def op_fan_manual(params):
-    """手动转速：duty=20–100 固定转速，duty=0/空 回到温控曲线。
+    """手动转速：percent=30–100 固定转速，auto=true 回到温控曲线。
 
     写在运行目录（/run，重启即失效）。原生控制器约 0.25 秒内读到；超温保护、
     传感器失效时强制 100%，温度升到曲线第三点后按曲线提速。
+
+    旧页面用的是 duty：0 / 空 表示恢复自动，其余是手动值。保留这个含义 ——
+    升级时还开着的旧页面点「恢复自动」不能被当成「手动 0%」把风扇停掉。
     """
-    raw = params.get("duty")
-    duty = 0 if raw in (None, "", 0, "0", "auto") else _as_int(raw, -1)
-    if duty and not 20 <= duty <= 100:
-        return False, "手动转速须在 20–100% 之间"
+    if "percent" in params:
+        auto, duty = False, _as_int(params.get("percent"), -1)
+    elif params.get("auto") is True:
+        auto, duty = True, 0
+    else:
+        raw = params.get("duty")
+        auto = raw in (None, "", 0, "0", "auto")
+        duty = 0 if auto else _as_int(raw, -1)
+    if not auto and not 30 <= duty <= 100:
+        return False, "手动转速须在 30–100% 之间"
     if not NATIVE_ENABLED:
         return False, "当前风扇由旧版脚本控制，不支持手动转速；请先完成设备树升级启用原生控制"
     try:
-        if not duty:
+        if auto:
             _clear_fan_manual()
             return True, "已恢复温控曲线"
         ok, message = apply_native_settings("手动转速")

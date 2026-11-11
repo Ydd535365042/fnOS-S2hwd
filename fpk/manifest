@@ -1,5 +1,5 @@
 appname               = fnOS-S2
-version               = 1.0.9
+version               = 1.0.10
 display_name          = fnOS-S2
 desc                  = <b>fnOS-S2 硬件控制台</b><br>由 NIX 独立开发，面向飞牛 fnOS / RK3568 NAS。在网页中管理风扇、指示灯、蜂鸣器和定时开关机。<br><br>· 控制页集成 S2 自愈最小包 1.1.10 和电源灯美化包 1.1.0，完整原包校验、状态、安装、更新、停用和执行日志。<br>· 脚本库自带硬件自检、诊断、设备树升级 / 回滚、电源灯美化脚本，可一键恢复默认；自定义脚本保留。<br>· 风扇支持静音 / 性能 / 自定义曲线和滑动手动调速。<br>· 右上角铃铛保留告警、邮件和 Webhook 通知设置。<br>· 仅访问口令登录，无账号系统；登录记忆无固定有效期。
 platform              = arm
@@ -15,5 +15,5 @@ desktop_uidir         = ui
 desktop_applaunchname = fnOS-S2.main
 ctl_stop              = true
 install_type          = 
-changelog             = fnOS-S2 1.0.9：风扇滑块边拖边生效、不再抖动；温控曲线四个点的转速全部可调；定时开关机开关即时响应，保存不再反复重载系统服务；概览底部和控制页布局收紧，脚本列表超出后滚动。
+changelog             = fnOS-S2 1.0.10：风扇滑块的按钮、数字和轨道位置固定，刻度 0–100%、最低 30%；定时开关机保存立即回应并新增「正在应用」等待状态，后台应用失败自动退回；趋势图温度显示整数。
 checksum              = 2d55910f4da442cad66388e18bb6cbae

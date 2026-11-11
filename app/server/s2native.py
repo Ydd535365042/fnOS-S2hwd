@@ -152,7 +152,7 @@ class Native:
         elif highest >= 60: reason = "硬盘温度过高"
         force = number(read(self.runtime/"force_until")) or 0
         manual = number(read(self.runtime/"manual_duty"))
-        manual = int(manual) if manual is not None and 20 <= manual <= 100 else None
+        manual = int(manual) if manual is not None and 30 <= manual <= 100 else None
         if reason: duty, mode = 100, "protect"
         elif force > now: duty, mode = 100, "test"
         # Manual speed may run below the curve only while both sources are under their third anchor;
