@@ -2085,7 +2085,7 @@
   const fanSliderVal = document.getElementById("fan-slider-val");
   const fanAutoBtn = document.getElementById("fan-auto");
   const AUTO = "auto";   // 目标值要么是 30–100 的手动转速，要么是「回到温控曲线」
-  // 轨道刻度固定 0–100%（滑块位置和上面的转速条对得上），但最低只能设到 30%：再往左拖停在 30%
+  // 轨道刻度 0–100%：自动时停在 0；一拖动就进入手动，最低 30%，往左拖过 30% 停在 30%
   const FAN_MANUAL_MIN = 30;
   let fanManualOn = false, fanManualHold = 0, fanManualWant = null, fanManualSent = null, fanManualBusy = false, fanManualSentAt = 0;
   // 轨道的填充长度由 --p 决定（全站滑块共用的样式），值一变就要跟着写
@@ -2098,12 +2098,12 @@
     fanAutoBtn.textContent = on ? "恢复自动" : "自动";
     fanAutoBtn.classList.toggle("is-auto", !on);
     fanAutoBtn.title = on ? "回到温控曲线自动调速" : "当前按温控曲线自动调速，拖动滑块可手动设定";
-    if (on && duty !== null && duty !== undefined) fanSlider.value = duty;
-    // 滑块只表示「手动设了多少」：手动时轨道填到设定值、这一格写百分比；
-    // 自动时轨道不填色、圆点变灰、这一格空着（「自动」由右边的按钮说），也不跟着实际转速动 ——
-    // 实际转速只看上面的大数字和转速条，两样东西不混在一起
-    fanSlider.style.setProperty("--p", on ? fanSlider.value + "%" : "0%");
-    fanSliderVal.textContent = on ? fanSlider.value + "%" : "—";
+    // 滑块只表示「手动设了多少」：自动时停在 0、写 0%，不跟着实际转速动；
+    // 手动时在 30–100% 之间，轨道填到设定值。实际转速只看上面的大数字和转速条
+    if (!on) fanSlider.value = 0;
+    else if (duty !== null && duty !== undefined) fanSlider.value = duty;
+    fanSlider.style.setProperty("--p", fanSlider.value + "%");
+    fanSliderVal.textContent = fanSlider.value + "%";
   }
   function syncFanManual(sensor) {
     const usable = sensor.fan_manual_ok !== false && !(S2.access && S2.access.danger === false);

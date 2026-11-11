@@ -370,11 +370,6 @@ button:focus:not(:focus-visible),.seg button:focus:not(:focus-visible),.nav-item
 .fan-manual output{font-variant-numeric:tabular-nums;text-align:right;color:var(--fg);font-weight:600;white-space:nowrap}
 .fan-manual input[type=range]{width:100%;min-width:0;height:28px;margin:0;cursor:pointer;touch-action:pan-y}
 .fan-manual input[type=range]:disabled{cursor:not-allowed;opacity:.5}
-/* 自动时滑块只是「拖它就进入手动」的入口：不填色、圆点变灰，不表示任何当前值 */
-.fan-manual:not(.is-on) input[type=range]::-webkit-slider-thumb{border-color:var(--line-2)}
-.fan-manual:not(.is-on) input[type=range]::-moz-range-thumb{border-color:var(--line-2)}
-.fan-manual:not(.is-on) input[type=range]::-moz-range-progress{background:transparent}
-.fan-manual:not(.is-on) output{color:var(--faint);font-weight:500}
 /* 按钮宽度写死（够放「恢复自动」四个字）：变成「自动」时不缩，轨道和数字都不挪位置 */
 .fan-manual .btn{width:76px;padding:0;justify-content:center;text-align:center}
 /* 自动时按钮是状态标签：高亮、不可点，不是灰掉的「恢复自动」 */
