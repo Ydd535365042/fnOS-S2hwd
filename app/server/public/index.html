@@ -167,16 +167,15 @@
                 <div class="bar"><span class="fill" id="ov-fan-fill" style="width:0%"></span></div>
                 <div class="fan-manual" id="ov-fan-manual">
                   <label for="fan-slider">手动转速</label>
-                  <input type="range" id="fan-slider" min="30" max="100" step="5" value="50" aria-describedby="fan-manual-hint">
+                  <input type="range" id="fan-slider" min="20" max="100" step="1" value="50" aria-describedby="fan-help">
                   <output id="fan-slider-val" for="fan-slider">自动</output>
-                  <button class="btn sm" id="fan-auto" type="button" hidden>恢复自动</button>
+                  <button class="btn sm" id="fan-auto" type="button" disabled>恢复自动</button>
                 </div>
-                <p class="help" id="fan-manual-hint" hidden>手动转速在重启后失效；温度升到曲线第三点后按曲线提速，超温时自动全速</p>
                 <dl class="fan-rows" id="ov-fan-rows">
                   <div class="fan-row" data-src="cpu"><dt>处理器</dt><dd class="t" id="ov-fan-cpu-t">--</dd><dd class="a" id="ov-fan-cpu-a">--</dd><dd class="d" id="ov-fan-cpu-d">--</dd></div>
                   <div class="fan-row" data-src="hdd"><dt>硬盘</dt><dd class="t" id="ov-fan-hdd-t">--</dd><dd class="a" id="ov-fan-hdd-a">--</dd><dd class="d" id="ov-fan-hdd-d">--</dd></div>
                 </dl>
-                <p class="help">两路曲线取较高的一路 · 起转 30%、全速 100% 固定 · 点「自定义」调整锚点</p>
+                <p class="help" id="fan-help">两路曲线取较高的一路 · 手动转速重启后失效，温度偏高时按曲线提速</p>
               </div>
 
               <div class="flip-face flip-back">
@@ -198,10 +197,10 @@
                     </tr>
                     <tr data-curve="hdd">
                       <td>转速 %</td>
-                      <td class="fixed" title="起转转速固定 30%"><span>30</span></td>
-                      <td><input type="number" data-k="d2" value="30" min="30" max="100" aria-label="硬盘第二锚点转速"></td>
-                      <td><input type="number" data-k="d3" value="70" min="30" max="100" aria-label="硬盘第三锚点转速"></td>
-                      <td class="fixed" title="全速固定 100%"><span>100</span></td>
+                      <td><input type="number" data-k="d1" value="30" min="20" max="100" aria-label="硬盘起转转速"></td>
+                      <td><input type="number" data-k="d2" value="30" min="20" max="100" aria-label="硬盘第二锚点转速"></td>
+                      <td><input type="number" data-k="d3" value="70" min="20" max="100" aria-label="硬盘第三锚点转速"></td>
+                      <td><input type="number" data-k="d4" value="100" min="20" max="100" aria-label="硬盘全速点转速"></td>
                     </tr>
                     <tr data-curve="cpu">
                       <td>处理器 ℃</td>
@@ -212,10 +211,10 @@
                     </tr>
                     <tr data-curve="cpu">
                       <td>转速 %</td>
-                      <td class="fixed" title="起转转速固定 30%"><span>30</span></td>
-                      <td><input type="number" data-k="d2" value="30" min="30" max="100" aria-label="处理器第二锚点转速"></td>
-                      <td><input type="number" data-k="d3" value="70" min="30" max="100" aria-label="处理器第三锚点转速"></td>
-                      <td class="fixed" title="全速固定 100%"><span>100</span></td>
+                      <td><input type="number" data-k="d1" value="30" min="20" max="100" aria-label="处理器起转转速"></td>
+                      <td><input type="number" data-k="d2" value="30" min="20" max="100" aria-label="处理器第二锚点转速"></td>
+                      <td><input type="number" data-k="d3" value="70" min="20" max="100" aria-label="处理器第三锚点转速"></td>
+                      <td><input type="number" data-k="d4" value="100" min="20" max="100" aria-label="处理器全速点转速"></td>
                     </tr>
                   </tbody>
                 </table>
@@ -346,18 +345,38 @@
             <p class="help">开机靠硬件时钟唤醒，需保持通电；按设备时间执行</p>
           </div>
 
-          <div class="card col-8 svc-card">
-            <div class="card-hd">
-              <h2>服务状态</h2>
-              <span class="chip ok" id="svc-summary"><i class="dot"></i>检测中…</span>
-              <div class="spacer"></div>
-              <button class="btn sm ghost" id="btn-svc-refresh">重新检测</button>
+          <!-- 服务状态只有两三项，单独占一行会留一大片空白：和设备信息叠成左栏，访问端口占右栏 -->
+          <div class="col-8 stack">
+            <div class="card svc-card">
+              <div class="card-hd">
+                <h2>服务状态</h2>
+                <span class="chip ok" id="svc-summary"><i class="dot"></i>检测中…</span>
+                <div class="spacer"></div>
+                <button class="btn sm ghost" id="btn-svc-refresh">重新检测</button>
+              </div>
+              <div class="svc-grid" id="svc-grid"></div>
+              <div class="svc-hint" id="svc-hint" hidden>
+                <svg aria-hidden="true"><use href="#i-alert"/></svg>
+                <span>服务全部未运行。常见原因是系统更新后依赖缺失，或脚本没有重新部署。</span>
+                <button class="go" id="svc-hint-go">去运行自检</button>
+              </div>
             </div>
-            <div class="svc-grid" id="svc-grid"></div>
-            <div class="svc-hint" id="svc-hint" hidden>
-              <svg aria-hidden="true"><use href="#i-alert"/></svg>
-              <span>服务全部未运行。常见原因是系统更新后依赖缺失，或脚本没有重新部署。</span>
-              <button class="go" id="svc-hint-go">去运行自检</button>
+
+            <div class="card dev-card">
+              <div class="card-hd"><h2>设备信息</h2></div>
+              <dl class="kv kv-grid">
+                <div class="row"><dt>设备型号</dt><dd id="set-board">—</dd></div>
+                <div class="row"><dt>操作系统</dt><dd id="set-os">—</dd></div>
+                <div class="row"><dt>内核</dt><dd id="set-kernel" class="mono">—</dd></div>
+                <div class="row"><dt>架构</dt><dd id="set-arch" class="mono">—</dd></div>
+                <div class="row"><dt>主机名</dt><dd id="set-host" class="mono">—</dd></div>
+                <div class="row"><dt>运行身份</dt><dd id="set-root">—</dd></div>
+                <div class="row"><dt>运行时长</dt><dd id="set-uptime">—</dd></div>
+                <div class="row"><dt>控制台版本</dt><dd id="set-ver" class="mono">—</dd></div>
+              </dl>
+              <p class="info-note">
+                <svg aria-hidden="true"><use href="#i-info"/></svg><span id="set-note">数值来自设备实时状态，每 10 秒刷新</span>
+              </p>
             </div>
           </div>
 
@@ -382,23 +401,6 @@
             </dl>
             <button class="btn sm ghost" id="logout" type="button" hidden>退出登录</button>
             <p class="help acc-hint" id="acc-hint" hidden>没有口令时，局域网里的设备只能查看硬件状态。硬件控制、配置修改和脚本执行需要先在飞牛「应用设置 → 配置」里设置口令。</p>
-          </div>
-
-          <div class="card col-12">
-            <div class="card-hd"><h2>设备信息</h2></div>
-            <dl class="kv kv-grid">
-              <div class="row"><dt>设备型号</dt><dd id="set-board">—</dd></div>
-              <div class="row"><dt>操作系统</dt><dd id="set-os">—</dd></div>
-              <div class="row"><dt>内核</dt><dd id="set-kernel" class="mono">—</dd></div>
-              <div class="row"><dt>架构</dt><dd id="set-arch" class="mono">—</dd></div>
-              <div class="row"><dt>主机名</dt><dd id="set-host" class="mono">—</dd></div>
-              <div class="row"><dt>运行身份</dt><dd id="set-root">—</dd></div>
-              <div class="row"><dt>运行时长</dt><dd id="set-uptime">—</dd></div>
-              <div class="row"><dt>控制台版本</dt><dd id="set-ver" class="mono">—</dd></div>
-            </dl>
-            <p class="info-note">
-              <svg aria-hidden="true"><use href="#i-info"/></svg><span id="set-note">数值来自设备实时状态，每 10 秒刷新</span>
-            </p>
           </div>
 
         </div>

@@ -42,14 +42,14 @@ def kv(path):
 
 def curve(temp, values, prefix):
     if temp is None: return 0
-    defaults = [60, 65, 72, 80, 30, 70] if prefix == "CPU" else [42, 48, 52, 55, 30, 70]
-    t1, t2, t3, t4, d2, d3 = [int(values.get(prefix+"_"+key, default))
-        for key, default in zip(["T1", "T2", "T3", "T4", "D2", "D3"], defaults)]
-    if not 0 < t1 < t2 < t3 < t4 <= (85 if prefix == "CPU" else 60) or not 30 <= d2 <= d3 <= 100:
+    defaults = [60, 65, 72, 80, 30, 30, 70, 100] if prefix == "CPU" else [42, 48, 52, 55, 30, 30, 70, 100]
+    t1, t2, t3, t4, d1, d2, d3, d4 = [int(values.get(prefix+"_"+key, default))
+        for key, default in zip(["T1", "T2", "T3", "T4", "D1", "D2", "D3", "D4"], defaults)]
+    if not 0 < t1 < t2 < t3 < t4 <= (85 if prefix == "CPU" else 60) or not 20 <= d1 <= d2 <= d3 <= d4 <= 100:
         raise ValueError("温控曲线无效")
     if temp < t1: return 0
-    if temp >= t4: return 100
-    for low, high, a, b in [(t1, t2, 30, d2), (t2, t3, d2, d3), (t3, t4, d3, 100)]:
+    if temp >= t4: return d4
+    for low, high, a, b in [(t1, t2, d1, d2), (t2, t3, d2, d3), (t3, t4, d3, d4)]:
         if temp < high: return round(a + (b-a)*(temp-low)/(high-low))
 
 
@@ -140,15 +140,19 @@ class Native:
             duty = max(curve(cpu, config, "CPU"), curve(highest, config, "HDD"))
             node = self.fan()
             if duty == 0 and node and (number(read(node/"pwm1")) or 0) > 0:
-                if max(curve(None if cpu is None else cpu+2, config, "CPU"), curve(highest+2, config, "HDD")) >= 30:
-                    duty = 30
+                # 2 ℃ hysteresis: keep spinning at the start duty of whichever source is still near its start point.
+                near = [int(config.get(prefix+"_D1", 30)) for prefix, temp in (("CPU", None if cpu is None else cpu+2), ("HDD", highest+2))
+                        if curve(temp, config, prefix) > 0]
+                if near: duty = max(near)
             hot = (cpu is not None and cpu >= int(config.get("CPU_T3", 72))) or highest >= int(config.get("HDD_T3", 52))
         except (ValueError, TypeError): duty, reason, hot = 100, "温控曲线无效", True
         if cpu is None: reason = "CPU 温度传感器无效"
         elif cpu >= min(85, trip-1 if trip is not None else 85): reason = "达到内核温控安全阈值"
+        # The full-speed duty is user-adjustable, so a hot disk needs its own hard stop.
+        elif highest >= 60: reason = "硬盘温度过高"
         force = number(read(self.runtime/"force_until")) or 0
         manual = number(read(self.runtime/"manual_duty"))
-        manual = int(manual) if manual is not None and 30 <= manual <= 100 else None
+        manual = int(manual) if manual is not None and 20 <= manual <= 100 else None
         if reason: duty, mode = 100, "protect"
         elif force > now: duty, mode = 100, "test"
         # Manual speed may run below the curve only while both sources are under their third anchor;

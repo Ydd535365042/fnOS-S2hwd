@@ -1609,25 +1609,24 @@
          T2 ~ T3        → D2% → D3%
          T3 ~ T4        → D3% → D4%
          t >= T4        → D4%（全速）
-     D1=30（起转）与 D4=100（全速）是固件写死的常量，不落盘也不给改 ——
-     允许改这两个值只会得到「风扇不转」或「风扇永远全速」两种结果。
+     四个点的温度和转速都可以改（起转转速最低 20%，转速逐点不降）。
+     旧版风扇脚本的起转 30% / 全速 100% 是写死的，那种设备上这两格不可改。
      界面上只有一个转速数字：实际占空比。没有「挡位」这层中间量，
      就不会再出现「10 挡 / 85%」两个数互相打架的情况。 */
-  const FAN_D1 = 30, FAN_D4 = 100;
 
   // 出厂曲线，与 app/firmware/fan-control.conf 的默认值一致
   const FAN_PRESET = {
     quiet: {
-      hdd: { t1: 42, t2: 48, t3: 52, t4: 55, d2: 30, d3: 70 },
-      cpu: { t1: 60, t2: 65, t3: 72, t4: 80, d2: 30, d3: 70 },
+      hdd: { t1: 42, t2: 48, t3: 52, t4: 55, d1: 30, d2: 30, d3: 70, d4: 100 },
+      cpu: { t1: 60, t2: 65, t3: 72, t4: 80, d1: 30, d2: 30, d3: 70, d4: 100 },
     },
     performance: {
-      hdd: { t1: 40, t2: 45, t3: 50, t4: 55, d2: 50, d3: 85 },
-      cpu: { t1: 60, t2: 65, t3: 75, t4: 80, d2: 60, d3: 85 },
+      hdd: { t1: 40, t2: 45, t3: 50, t4: 55, d1: 30, d2: 50, d3: 85, d4: 100 },
+      cpu: { t1: 60, t2: 65, t3: 75, t4: 80, d1: 30, d2: 60, d3: 85, d4: 100 },
     },
   };
   const PROFILE_CN = { quiet: "静音", performance: "性能", custom: "自定义" };
-  const FAN_KEYS = ["t1", "t2", "t3", "t4", "d2", "d3"];
+  const FAN_KEYS = ["t1", "t2", "t3", "t4", "d1", "d2", "d3", "d4"];
 
   /* 硬盘 T4 天花板 55℃（原来是 65℃）。
      老设备的 /etc/fan-control.conf 里可能还写着 60 —— 直接显示会让用户
@@ -1657,6 +1656,7 @@
   let curveDirty = false;
   let fanTesting = false;   // 「全速 10 秒」进行中：挡住重复点击
   let fanTestGrace = 0, fanTestUntil = 0;
+  let fanManualTarget = null;   // 正在拖 / 刚设的手动目标值：设备确认之前读数先按它显示
 
   // /api/state 的 conf.fan（KEY=VALUE 字符串）→ {hdd, cpu} 曲线；缺的格子用出厂值，硬盘 T4 夹到上限
   function curveFromConf(fan) {
@@ -1664,11 +1664,13 @@
       hdd: clampHddCurve({
         t1: num(fan.HDD_T1) || 42, t2: num(fan.HDD_T2) || 48,
         t3: num(fan.HDD_T3) || 52, t4: num(fan.HDD_T4) || 55,
-        d2: num(fan.HDD_D2) || 30, d3: num(fan.HDD_D3) || 70,
+        d1: num(fan.HDD_D1) || 30, d2: num(fan.HDD_D2) || 30,
+        d3: num(fan.HDD_D3) || 70, d4: num(fan.HDD_D4) || 100,
       }),
       cpu: { t1: num(fan.CPU_T1) || 60, t2: num(fan.CPU_T2) || 65,
              t3: num(fan.CPU_T3) || 72, t4: num(fan.CPU_T4) || 80,
-             d2: num(fan.CPU_D2) || 30, d3: num(fan.CPU_D3) || 70 },
+             d1: num(fan.CPU_D1) || 30, d2: num(fan.CPU_D2) || 30,
+             d3: num(fan.CPU_D3) || 70, d4: num(fan.CPU_D4) || 100 },
     };
   }
   // T4 越界夹值的提示只弹一次
@@ -1679,12 +1681,12 @@
   function curveDuty(t, a) {
     if (t === null || t === undefined) return null;
     if (t < a.t1) return 0;
-    if (t >= a.t4) return FAN_D4;
+    if (t >= a.t4) return a.d4;
     const lerp = (x, x0, x1, y0, y1) =>
       x1 === x0 ? y1 : Math.round(y0 + ((x - x0) * (y1 - y0)) / (x1 - x0));
-    if (t < a.t2) return lerp(t, a.t1, a.t2, FAN_D1, a.d2);
+    if (t < a.t2) return lerp(t, a.t1, a.t2, a.d1, a.d2);
     if (t < a.t3) return lerp(t, a.t2, a.t3, a.d2, a.d3);
-    return lerp(t, a.t3, a.t4, a.d3, FAN_D4);
+    return lerp(t, a.t3, a.t4, a.d3, a.d4);
   }
 
   /* 叶轮转速跟着实际占空比走。30% → 2.2s/圈，100% → 0.75s/圈，线性；
@@ -1756,7 +1758,7 @@
     const cpuD = curveDuty(cpu, fanCurve.cpu) || 0;
     const hddD = curveDuty(hdd, fanCurve.hdd) || 0;
     if (!cpuD && !hddD) {
-      // 两路都没到起转点却在转：硬盘温度读不到时保底 30%，或降温时的 2℃ 回差
+      // 两路都没到起转点却在转：硬盘温度读不到时保底转速，或降温时的 2℃ 回差
       if (duty > 0) return s.fan_source === "unknown" ? "硬盘温度未知 · 保底 " + duty + "%" : "降温回差 · 保持 " + duty + "%";
       return "未达起转温度";
     }
@@ -1770,6 +1772,11 @@
     // 全速测试刚发出的头几秒，控制器还没采样到：先按测试中显示，别被旧读数打回去
     if (fanTesting && Date.now() < fanTestGrace && sensor.fan_mode !== "test" && sensor.fan_mode !== "protect") {
       sensor = Object.assign({}, sensor, { fan_duty: 100, fan_mode: "test" });
+    }
+    // 手动滑块刚设了目标值、设备还没确认：轮询拉回来的旧转速不能把读数拽回去，否则拖动时数字来回跳
+    if (fanManualTarget && (fanManualBusy || Date.now() < fanManualHold) && sensor.fan_mode !== "protect" && sensor.fan_mode !== "test"
+        && num(sensor.fan_manual) !== fanManualTarget) {
+      sensor = Object.assign({}, sensor, { fan_duty: fanManualTarget, fan_mode: "manual", fan_manual: String(fanManualTarget) });
     }
     const duty = num(sensor.fan_duty);
     const cpu = num(sensor.cpu_temp);
@@ -1820,8 +1827,10 @@
       if (a.t2 <= a.t1) bad.push(label + " 第二点必须大于起转点");
       if (a.t3 <= a.t2) bad.push(label + " 第三点必须大于第二点");
       if (a.t4 <= a.t3 || a.t4 > tMax) bad.push(label + " 全速点必须大于第三点且 ≤ " + tMax + "℃");
-      if (a.d2 < FAN_D1 || a.d2 > 100) bad.push(label + " 第二点转速须在 30–100%");
-      if (a.d3 < a.d2 || a.d3 > 100) bad.push(label + " 第三点转速必须 ≥ 第二点且 ≤ 100%");
+      if (a.d1 < 20 || a.d1 > 100) bad.push(label + " 起转转速须在 20–100%");
+      if (a.d2 < a.d1) bad.push(label + " 第二点转速不能低于起转转速");
+      if (a.d3 < a.d2) bad.push(label + " 第三点转速不能低于第二点");
+      if (a.d4 < a.d3 || a.d4 > 100) bad.push(label + " 全速点转速必须 ≥ 第三点且 ≤ 100%");
     };
     chk("硬盘", next.hdd, 30, 55);
     chk("处理器", next.cpu, 40, 80);
@@ -1844,6 +1853,7 @@
       need[e.k] = curveDuty(t, a);
       e.t.textContent = t === null ? "--" : Math.round(t) + "℃";
       e.a.textContent = a.t1 + " / " + a.t2 + " / " + a.t3 + " / " + a.t4 + "℃";
+      e.a.title = "四个锚点对应转速 " + a.d1 + " / " + a.d2 + " / " + a.d3 + " / " + a.d4 + "%";
       e.d.textContent = need[e.k] === null ? "无读数" : need[e.k] === 0 ? "未达起转" : "需 " + need[e.k] + "%";
     });
     const lead = need.cpu === null && need.hdd === null ? "" : (need.cpu || 0) >= (need.hdd || 0) ? "cpu" : "hdd";
@@ -2045,24 +2055,25 @@
   }
   document.getElementById("curve-save").addEventListener("click", saveFanCurve);
 
-  /* 滑动手动转速：拖动时只改显示，松手（change）才发一次请求；键盘方向键连按时合并成一次。
-     设备上的真实状态以 /api/sensor 的 fan_mode=manual / fan_manual 为准，
-     请求进行中或刚松手的 4 秒内不让轮询把滑块拽回去。 */
+  /* 滑动手动转速：边拖边生效。拖动时界面立刻跟手（读数、进度条、叶轮先按目标值显示），
+     请求按「最新值优先」发：上一条没回来就不排队，回来后只补发最后停在的那个值，
+     所以不会积压，也不用等松手。设备上的真实状态以 /api/sensor 的 fan_mode / fan_manual 为准，
+     拖动中和刚停手的几秒内不让轮询把滑块拽回去。 */
   const fanManualBox = document.getElementById("ov-fan-manual");
   const fanSlider = document.getElementById("fan-slider");
   const fanSliderVal = document.getElementById("fan-slider-val");
   const fanAutoBtn = document.getElementById("fan-auto");
-  const fanManualHint = document.getElementById("fan-manual-hint");
-  let fanManualOn = false, fanManualHold = 0, fanManualTimer = 0, fanManualSeq = 0;
+  const FAN_MANUAL_MIN = 20;
+  let fanManualOn = false, fanManualHold = 0, fanManualWant = null, fanManualSent = null, fanManualBusy = false, fanManualSentAt = 0;
   // 轨道的填充长度由 --p 决定（全站滑块共用的样式），值一变就要跟着写
   function paintFanSlider() {
-    fanSlider.style.setProperty("--p", ((fanSlider.value - 30) / 70) * 100 + "%");
+    fanSlider.style.setProperty("--p", ((fanSlider.value - FAN_MANUAL_MIN) / (100 - FAN_MANUAL_MIN)) * 100 + "%");
   }
   function showFanManual(on, duty) {
     fanManualOn = on;
     fanManualBox.classList.toggle("is-on", on);
-    fanAutoBtn.hidden = !on;
-    fanManualHint.hidden = !on;
+    // 按钮的位置始终留着，只切换可见性：拖动中突然多出一个按钮会把轨道挤窄，滑块在手底下跳
+    fanAutoBtn.disabled = !on;
     if (on && duty) fanSlider.value = duty;
     paintFanSlider();
     fanSliderVal.textContent = on ? fanSlider.value + "%" : "自动";
@@ -2072,57 +2083,65 @@
     fanSlider.disabled = !usable;
     fanSlider.title = usable ? "" : sensor.fan_manual_ok === false
       ? "当前由旧版风扇脚本控制，完成设备树升级启用原生控制后才能手动调速" : "设置访问口令后才能手动调速";
-    if (Date.now() < fanManualHold) return;
+    // 旧版风扇脚本的起转 / 全速转速是写死的，这两格只在原生控制下可改
+    document.querySelectorAll('.curve input[data-k="d1"], .curve input[data-k="d4"]').forEach((inp) => {
+      inp.disabled = sensor.fan_manual_ok === false;
+      inp.title = inp.disabled ? "旧版风扇脚本不支持修改起转和全速转速" : "";
+    });
+    if (Date.now() < fanManualHold || fanManualBusy) return;
     const manual = num(sensor.fan_manual);
-    const on = sensor.fan_mode === "manual" || (manual !== null && manual >= 30);
+    const on = sensor.fan_mode === "manual" || (manual !== null && manual >= FAN_MANUAL_MIN);
     // 自动时滑块停在当前实际转速上，拖动就是从现在的转速起调
-    if (!on) fanSlider.value = Math.max(30, Math.min(100, num(sensor.fan_duty) || 30));
+    if (!on) fanSlider.value = Math.max(FAN_MANUAL_MIN, Math.min(100, num(sensor.fan_duty) || FAN_MANUAL_MIN));
     showFanManual(on, manual);
   }
-  async function sendFanManual(duty) {
-    const seq = ++fanManualSeq;
-    fanManualHold = Date.now() + 60000;
-    fanManualBox.classList.add("is-busy");
-    const res = await hw("fan_manual", { duty: duty });
-    if (seq !== fanManualSeq) return;          // 期间又拖了一次，以最后一次为准
-    fanManualSending = false;
-    fanManualBox.classList.remove("is-busy");
-    fanManualHold = Date.now() + 4000;         // 给控制器一个采样周期（2 秒）把新状态写出来
+  // 发送泵：同一时刻只有一条请求在路上，回来后如果目标值又变了就再发一条
+  async function pumpFanManual() {
+    if (fanManualBusy) return;
+    fanManualBusy = true;
+    let res = { ok: true }, last = null;
+    while (res.ok && fanManualWant !== null && fanManualWant !== fanManualSent) {
+      // 第一条立刻发，之后每条至少隔 80 毫秒：手感上仍是连续的，设备一秒最多收十来条
+      const wait = fanManualSentAt + 80 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      last = fanManualWant;
+      fanManualSentAt = Date.now();
+      res = await hw("fan_manual", { duty: last });
+      if (res.ok) fanManualSent = last;
+    }
+    fanManualBusy = false;
+    fanManualWant = null;
     if (!res.ok) {
       fanManualHold = 0;
+      fanManualSent = null;
       toast(res.msg || "设置手动转速失败", "err");
       pollSensorOnly();
       return;
     }
-    showFanManual(!!duty, duty);
-    toast(res.msg || (duty ? "已设为手动 " + duty + "%" : "已恢复温控曲线"));
-    if (duty) applyFanReading(Object.assign({}, S2.sensor || {}, { fan_duty: duty, fan_mode: "manual", fan_manual: String(duty) }));
+    if (last === null) return;
+    fanManualHold = Date.now() + 2500;      // 控制器 0.25 秒内执行，留一个读数周期再让轮询接管
+    if (last === 0) {
+      fanManualSent = null;
+      toast("已恢复温控曲线");
+    }
     clearTimeout(fanFollowTimer);
     let n = 0;
-    const tick = () => { if (++n > 4 || document.hidden) return; pollSensorOnly(); fanFollowTimer = setTimeout(tick, 1000); };
-    fanFollowTimer = setTimeout(tick, 1200);
+    const tick = () => { if (++n > 3 || document.hidden) return; pollSensorOnly(); fanFollowTimer = setTimeout(tick, 1000); };
+    fanFollowTimer = setTimeout(tick, 600);
   }
-  fanSlider.addEventListener("input", () => {
-    fanManualHold = Date.now() + 60000;
-    paintFanSlider();
-    fanSliderVal.textContent = fanSlider.value + "%";
-    fanManualBox.classList.add("is-on");
-  });
-  fanSlider.addEventListener("change", () => {
-    clearTimeout(fanManualTimer);
-    fanManualSending = true;
-    fanManualTimer = setTimeout(() => sendFanManual(parseInt(fanSlider.value, 10)), 250);
-  });
-  // 拖了一下又放回原位：浏览器不会触发 change，也就没有请求发出去。
-  // 松手后要把「看起来像手动」的显示还原，并让轮询重新接管
-  let fanManualSending = false;
-  const fanSliderRelease = () => setTimeout(() => {
-    if (fanManualSending || fanManualBox.classList.contains("is-busy")) return;
-    fanManualHold = 0;
-    syncFanManual(S2.sensor || {});
-  }, 400);
-  ["pointerup", "touchend", "keyup", "blur"].forEach((t) => fanSlider.addEventListener(t, fanSliderRelease));
-  fanAutoBtn.addEventListener("click", () => { clearTimeout(fanManualTimer); sendFanManual(0); });
+  function setFanManual(duty) {
+    fanManualWant = duty;
+    fanManualTarget = duty || null;
+    fanManualHold = Date.now() + 5000;
+    if (!duty) showFanManual(false);
+    if (duty) {
+      showFanManual(true, duty);
+      applyFanReading(Object.assign({}, S2.sensor || {}, { fan_duty: duty, fan_mode: "manual", fan_manual: String(duty) }));
+    }
+    pumpFanManual();
+  }
+  fanSlider.addEventListener("input", () => setFanManual(parseInt(fanSlider.value, 10)));
+  fanAutoBtn.addEventListener("click", () => setFanManual(0));
 
   /* 全速测试：后端写 force_until，固件 3 秒内把风扇拉到 100%，到期自己回温控。
      不再改曲线、不重启服务 —— 以前靠「把 CPU 曲线压到当前温度以下」来骗出全速，
@@ -2348,7 +2367,8 @@
     ovSchBoot.setAttribute("aria-label", "修改计划开机时间，当前 " + SCH.boot);
     document.getElementById("ov-sch-gap").textContent =
       !SCH.on ? "已停用" : SCH.maintenance > (Date.now() + (clockSkew || 0)) / 1000 ? "维护中"
-      : SCH.extended ? (SCH.next ? humanGap(Math.max(0, Math.ceil((SCH.next * 1000 - Date.now() - (clockSkew || 0)) / 60000))) : "未安排")
+      // 刚改过、设备还没回新的排期时按本地时间先算一个，别显示成「未安排」等几秒
+      : SCH.extended && !schDirty ? (SCH.next ? humanGap(Math.max(0, Math.ceil((SCH.next * 1000 - Date.now() - (clockSkew || 0)) / 60000))) : "未安排")
       : SCH.off ? humanGap(nextRun(SCH.off).mins) : "未设置关机时间";
     document.getElementById("ov-sch-card").classList.toggle("is-off", !SCH.on);
   }
@@ -2358,34 +2378,42 @@
   let schDirty = false;
   let schSaving = false;
 
+  // 设备最后一次确认接受的计划：保存失败时退回到这里，而不是退回到某一次点击之前
+  let schConfirmed = null, schQueued = null;
+
   function syncScheduleControls() {
+    // 保存途中不锁控件：再改一次就排队，等这次回来后把最新的值再发一遍
     [ovSchOn, ovSchOff, ovSchBoot].forEach((button) => {
-      button.disabled = schSaving || !!(S2.access && S2.access.danger === false);
+      button.disabled = !!(S2.access && S2.access.danger === false);
     });
   }
 
-  /* 把 SCH 整份写到后端。失败时由调用方回滚 —— 界面停在后端并不认的值，
-     比不让改更糟：下一条命令会按界面上的值去执行，而设备上根本不是这个值。 */
-  async function saveSchedule(okMsg, onFail) {
-    if (schSaving) { if (onFail) onFail(); return; }
-    schSaving = schDirty = true;
-    syncScheduleControls();
-    const res = await hw("set_power_schedule", {
-      enabled: SCH.on,
-      shutdown_time: SCH.off,
-      boot_time: SCH.boot,
-    });
+  /* 把 SCH 整份写到后端。界面先变、请求后发；失败时退回设备确认过的值 ——
+     界面停在后端并不认的值，比不让改更糟：设备上根本不是这个值。 */
+  async function saveSchedule(okMsg) {
+    schDirty = true;
+    if (schSaving) { schQueued = okMsg || ""; return; }
+    schSaving = true;
+    let res, msg = okMsg;
+    do {
+      if (schQueued !== null) msg = schQueued;
+      schQueued = null;
+      const sent = { on: SCH.on, off: SCH.off, boot: SCH.boot };
+      res = await hw("set_power_schedule", { enabled: sent.on, shutdown_time: sent.off, boot_time: sent.boot });
+      if (res.ok) schConfirmed = sent;
+    } while (res.ok && schQueued !== null);
     schSaving = schDirty = false;
-    syncScheduleControls();
+    schQueued = null;
     if (!res.ok) {
-      if (onFail) onFail();
+      if (schConfirmed) Object.assign(SCH, schConfirmed);
+      renderSchedule();
       toast(res.msg || "保存失败", "err");
+      refreshState();
       return;
     }
-    toast(okMsg || res.msg || "已保存");
+    toast(msg || res.msg || "已保存");
     refreshState();
   }
-
   /* 概览卡上的开关：就地生效，直接写后端。
      以前这里只改本地 checked 再弹一句「已启用」，其实一个字节都没落盘 ——
      10 秒后的轮询把它弹回原状，用户会以为开关坏了。小卡片上的操作
@@ -2393,11 +2421,10 @@
   ovSchOn.addEventListener("change", async (e) => {
     const want = e.target.checked;
     SCH.on = want;
+    schDirty = true;       // 先标脏再画：倒计时按本地时间先算，不等设备回新的排期
     renderSchedule();
-    await saveSchedule(want ? "定时计划已启用" : "定时计划已停用", () => {
-      SCH.on = !want;
-      renderSchedule();
-    });
+    await saveSchedule(want ? "定时计划已启用" : "定时计划已停用");
+
   });
 
   /* ---------- 概览卡上的时间就地编辑 ----------
@@ -2440,14 +2467,11 @@
       }
       // 卡片上没有「保存」按钮了（计划页撤掉时一并删了），所以改完立刻落盘 ——
       // 只改本地再等下一次轮询，等于改了个寂寞
-      const prev = SCH[kind];
       SCH[kind] = v;
       schDirty = true;
       renderSchedule();
-      saveSchedule((kind === "off" ? "计划关机" : "计划开机") + "已改为 " + v, () => {
-        SCH[kind] = prev;
-        renderSchedule();
-      });
+      saveSchedule((kind === "off" ? "计划关机" : "计划开机") + "已改为 " + v);
+
     };
 
     // 移动端选完直接 change，桌面端失焦才触发；done 保证只结算一次。
@@ -3557,6 +3581,7 @@
       SCH.on = ps.enabled === "1" || ps.enabled === "true" || ps.enabled === true;
       if (typeof ps.shutdown_time === "string") SCH.off = ps.shutdown_time;
       if (typeof ps.boot_time === "string") SCH.boot = ps.boot_time;
+      schConfirmed = { on: SCH.on, off: SCH.off, boot: SCH.boot };
       renderSchedule();
     }
 

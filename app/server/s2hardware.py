@@ -1,4 +1,5 @@
 """Strict hardware configuration bundles and extended policy operations."""
+import glob
 import importlib.util
 import hashlib
 import json
@@ -18,6 +19,16 @@ LOCK = threading.RLock()
 OPS = {"schedule_info"}
 
 
+def boot_unit(hw, enabled):
+    """Enable or disable the boot-time unit only when its state has to change.
+    `systemctl enable` reloads every unit (a second or more on this board); --no-reload skips that,
+    the symlink only matters at the next boot."""
+    current = bool(glob.glob("/etc/systemd/system/*.wants/s2-power-schedule.service"))
+    if current == enabled:
+        return 0
+    return hw.run(["systemctl", "enable" if enabled else "disable", "--no-reload", "s2-power-schedule.service"], timeout=30)[0]
+
+
 def set_schedule(hw, body):
     current = schedule.read_config(hw.APP_SCHED_CONF)
     config = schedule.validate({**current, **body})
@@ -34,8 +45,7 @@ def set_schedule(hw, body):
             "WEEKDAYS": ",".join(map(str, config["weekdays"])), "SKIP_DATES": ",".join(config["skip_dates"]),
             "MAINTENANCE_UNTIL": str(config["maintenance_until"])})
         if hw.NATIVE_ENABLED:
-            rc, _ = hw.run(["systemctl", "enable" if config["enabled"] else "disable", "s2-power-schedule.service"], timeout=30)
-            if rc:
+            if boot_unit(hw, config["enabled"]):
                 raise ValueError("开机计划服务设置失败")
         if os.path.exists(hw.SCHED_APPLY_BIN):
             rc, _ = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
@@ -53,8 +63,7 @@ def set_schedule(hw, body):
             return False, "计划应用失败，原配置恢复失败，请检查配置目录权限和计划服务"
         restored = True
         if hw.NATIVE_ENABLED:
-            rc, _ = hw.run(["systemctl", "enable" if current["enabled"] else "disable", "s2-power-schedule.service"], timeout=30)
-            restored = restored and rc == 0
+            restored = restored and boot_unit(hw, current["enabled"]) == 0
         if os.path.exists(hw.SCHED_APPLY_BIN):
             rc, _ = hw.run(["bash", hw.SCHED_APPLY_BIN, "apply"], timeout=30)
             restored = restored and rc == 0

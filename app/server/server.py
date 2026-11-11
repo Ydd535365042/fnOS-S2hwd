@@ -150,6 +150,7 @@ SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-\u4e00-\u9fa5]{1,64}$")
 JOBS = {}
 JOB_LOCK = threading.Lock()
 _GZIP_CACHE = {}
+_AUDIT_QUIET = {}
 _AGENT_STATE = {"ok": None, "ts": 0.0}
 _AGENT_LOCK = threading.Lock()
 _AGENT_PROBE_LOCK = threading.Lock()   # 让并发请求排队探测，别一起去 ping
@@ -1570,7 +1571,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
                 return
             self._audit_op = op
             r = hw_call(op, params)
-            audit("hw:%s" % op, params, remote, r.get("ok"))
+            # 拖动滑块时一秒能来好几条手动转速：成功的只每 3 秒记一条，失败的照常全记
+            quiet = op == "fan_manual" and r.get("ok") and time.time() - _AUDIT_QUIET.get(op, 0) < 3
+            if not quiet:
+                _AUDIT_QUIET[op] = time.time()
+                audit("hw:%s" % op, params, remote, r.get("ok"))
             self._json(r)
 
         elif path == "/api/alerts/read":

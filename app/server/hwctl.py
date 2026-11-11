@@ -48,7 +48,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.0.8"
+APP_VER = "1.0.9"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -1651,11 +1651,11 @@ def op_set_fan(params):
     """风扇三档温控策略：quiet / performance / custom。
 
     v1.6 起改用「四锚点百分比线性插值」模型：
-      温度 <= T1        → D1%（起转下限，固定 30）
+      温度 <  T1        → 停转
       T1 ~ T2          → D1% → D2%
       T2 ~ T3          → D2% → D3%
-      T3 ~ T4          → D3% → D4%（全速，固定 100）
-      >= T4            → 100%
+      T3 ~ T4          → D3% → D4%
+      >= T4            → D4%
     低于 T1 直接停转（0%），所以曲线本身不需要「0 挡」。
 
     原来那套 0–15 挡位 + 手动模式已废弃：挡位到占空比不是正比（FAN_DUTY_MIN=60
@@ -1664,8 +1664,7 @@ def op_set_fan(params):
 
     params:
       tempProfile: quiet|performance|custom
-      hdd / cpu:   {t1,t2,t3,t4,d2,d3}
-      D1=30 / D4=100 固定，不落盘。
+      hdd / cpu:   {t1,t2,t3,t4,d1,d2,d3,d4}；d1 / d4 省略时为 30 / 100。
     """
     if not NATIVE_ENABLED and not legacy_controller_available():
         return False, "硬件控制尚未就绪，请先运行硬件自检并核对设备树"
@@ -1675,41 +1674,31 @@ def op_set_fan(params):
     hdd = params.get("hdd") or {}
     cpu = params.get("cpu") or {}
 
-    h_t1 = _as_int(hdd.get("t1"), 42); h_t2 = _as_int(hdd.get("t2"), 48)
-    h_t3 = _as_int(hdd.get("t3"), 52); h_t4 = _as_int(hdd.get("t4"), 55)
-    h_d2 = _as_int(hdd.get("d2"), 30); h_d3 = _as_int(hdd.get("d3"), 70)
-    c_t1 = _as_int(cpu.get("t1"), 60); c_t2 = _as_int(cpu.get("t2"), 65)
-    c_t3 = _as_int(cpu.get("t3"), 72); c_t4 = _as_int(cpu.get("t4"), 80)
-    c_d2 = _as_int(cpu.get("d2"), 30); c_d3 = _as_int(cpu.get("d3"), 70)
-
-    # 锚点必须严格递增，否则固件里 curve_duty 的插值分母会变 0 或算出负数。
-    # 上限跟硬件走：机械盘 55℃ 起老化明显加快（原来是 65℃），
-    # CPU 80℃ 是这颗 SoC 的降频点。
-    errs = []
-    if h_t1 < 30:
-        errs.append("硬盘 T1 不能低于 30℃")
-    if h_t2 <= h_t1:
-        errs.append("硬盘 T2 必须大于 T1")
-    if h_t3 <= h_t2:
-        errs.append("硬盘 T3 必须大于 T2")
-    if h_t4 <= h_t3 or h_t4 > 55:
-        errs.append("硬盘 T4 必须大于 T3 且 ≤ 55℃")
-    if c_t1 < 40:
-        errs.append("CPU T1 不能低于 40℃")
-    if c_t2 <= c_t1:
-        errs.append("CPU T2 必须大于 T1")
-    if c_t3 <= c_t2:
-        errs.append("CPU T3 必须大于 T2")
-    if c_t4 <= c_t3 or c_t4 > 80:
-        errs.append("CPU T4 必须大于 T3 且 ≤ 80℃")
-    if not 30 <= h_d2 <= 100:
-        errs.append("硬盘 T2 转速须在 30–100%")
-    if not h_d2 <= h_d3 <= 100:
-        errs.append("硬盘 T3 转速必须 ≥ T2 且 ≤ 100%")
-    if not 30 <= c_d2 <= 100:
-        errs.append("CPU T2 转速须在 30–100%")
-    if not c_d2 <= c_d3 <= 100:
-        errs.append("CPU T3 转速必须 ≥ T2 且 ≤ 100%")
+    # 锚点必须严格递增，否则控制器里的插值分母会变 0 或算出负数。
+    # 上限跟硬件走：机械盘 55℃ 起老化明显加快，CPU 80℃ 是这颗 SoC 的降频点。
+    # 转速四个点都可调：起转 20–100%，之后逐点不降，全速点最高 100%。
+    errs, values = [], {}
+    for label, prefix, source, t_low, t_high, defaults in (
+            ("硬盘", "HDD", hdd, 30, 55, (42, 48, 52, 55, 30, 30, 70, 100)),
+            ("处理器", "CPU", cpu, 40, 80, (60, 65, 72, 80, 30, 30, 70, 100))):
+        t1, t2, t3, t4, d1, d2, d3, d4 = [_as_int(source.get(key), default) for key, default in
+                                          zip(("t1", "t2", "t3", "t4", "d1", "d2", "d3", "d4"), defaults)]
+        if t1 < t_low:
+            errs.append("%s起转点不能低于 %d℃" % (label, t_low))
+        if t2 <= t1:
+            errs.append("%s第二点温度必须大于起转点" % label)
+        if t3 <= t2:
+            errs.append("%s第三点温度必须大于第二点" % label)
+        if t4 <= t3 or t4 > t_high:
+            errs.append("%s全速点温度必须大于第三点且 ≤ %d℃" % (label, t_high))
+        if not 20 <= d1 <= 100:
+            errs.append("%s起转转速须在 20–100%%" % label)
+        if not d1 <= d2 <= d3 <= d4 <= 100:
+            errs.append("%s四个转速必须逐点不降且 ≤ 100%%" % label)
+        if not NATIVE_ENABLED and (d1 != 30 or d4 != 100):
+            errs.append("旧版风扇脚本不支持修改%s的起转和全速转速" % label)
+        for key, value in zip(("T1", "T2", "T3", "T4", "D1", "D2", "D3", "D4"), (t1, t2, t3, t4, d1, d2, d3, d4)):
+            values[prefix + "_" + key] = str(value)
     if errs:
         return False, "；".join(errs)
 
@@ -1717,14 +1706,10 @@ def op_set_fan(params):
         return False, "未找到 %s，风扇服务可能未安装" % ETC_FAN
 
     _clear_fan_manual()
-    write_kv(ETC_FAN, {
-        "TEMP_PROFILE": profile,
-        "HDD_T1": str(h_t1), "HDD_T2": str(h_t2), "HDD_T3": str(h_t3), "HDD_T4": str(h_t4),
-        "HDD_D2": str(h_d2), "HDD_D3": str(h_d3),
-        "CPU_T1": str(c_t1), "CPU_T2": str(c_t2), "CPU_T3": str(c_t3), "CPU_T4": str(c_t4),
-        "CPU_D2": str(c_d2), "CPU_D3": str(c_d3),
-    })
-
+    if not NATIVE_ENABLED:      # 旧脚本的起转 / 全速是写死的，不往它的配置里加它不认识的键
+        for key in ("HDD_D1", "HDD_D4", "CPU_D1", "CPU_D4"):
+            values.pop(key)
+    write_kv(ETC_FAN, dict(values, TEMP_PROFILE=profile))
     cn = {"quiet": "节能/安静", "performance": "性能", "custom": "自定义"}[profile]
     if NATIVE_ENABLED:
         return apply_native_settings("风扇曲线已保存")
@@ -1767,15 +1752,15 @@ def _clear_fan_manual():
 
 
 def op_fan_manual(params):
-    """手动转速：duty=30–100 固定转速，duty=0/空 回到温控曲线。
+    """手动转速：duty=20–100 固定转速，duty=0/空 回到温控曲线。
 
-    写在运行目录（/run，重启即失效）。原生控制器每 2 秒读一次；超温保护、
-    传感器失效和曲线到达全速点时仍强制 100%，手动只能在安全范围内调低或调高。
+    写在运行目录（/run，重启即失效）。原生控制器约 0.25 秒内读到；超温保护、
+    传感器失效时强制 100%，温度升到曲线第三点后按曲线提速。
     """
     raw = params.get("duty")
     duty = 0 if raw in (None, "", 0, "0", "auto") else _as_int(raw, -1)
-    if duty and not 30 <= duty <= 100:
-        return False, "手动转速须在 30–100% 之间"
+    if duty and not 20 <= duty <= 100:
+        return False, "手动转速须在 20–100% 之间"
     if not NATIVE_ENABLED:
         return False, "当前风扇由旧版脚本控制，不支持手动转速；请先完成设备树升级启用原生控制"
     try:
@@ -1802,6 +1787,13 @@ def legacy_controller_available():
 def apply_native_settings(message):
     if not NATIVE.capabilities()["ready"]:
         return False, NATIVE.capabilities()["detail"]
+    # 控制器每 2 秒重写一次状态文件：文件是新的就说明它活着，不必为每次拖动滑块起一个 systemctl 进程
+    try:
+        alive = time.time() - os.path.getmtime(FAN_STATUS) < 8
+    except OSError:
+        alive = False
+    if alive:
+        return True, message + "，已生效"
     bust_services_cache()   # 写风扇指令前必须看服务的当前状态，不能信 25 秒内的缓存
     if service_active(s2native.SERVICE) != "active":
         ok, detail = restart_service(s2native.SERVICE)

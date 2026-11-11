@@ -29,8 +29,8 @@
 # =============================================================
 set -u
 
-CONF="/etc/s2-power-schedule.conf"
-SHUTDOWN_TIMER="/etc/systemd/system/s2-power-shutdown.timer"
+CONF="${S2_SCHED_CONF:-/etc/s2-power-schedule.conf}"
+SHUTDOWN_TIMER="${S2_SHUTDOWN_TIMER:-/etc/systemd/system/s2-power-shutdown.timer}"
 SHUTDOWN_SVC="s2-power-shutdown.service"
 
 # RTC wakealarm 接口。原先在脚本加载时算一次存进变量 —— 如果 rtc 模块比本
@@ -91,41 +91,59 @@ clear_rtc() {
 apply() {
   read_conf
   local rc=0
+  # systemctl enable / disable / daemon-reload 每次都让 systemd 把全部单元重读一遍，
+  # 在这台设备上比较慢。网页上每改一次时间、每拨一次开关都会走到这里，
+  # 所以只在状态真的要变时才调，并且用 --no-reload 省掉多余的重载。
   if [ "$ENABLED" != "1" ]; then
     echo "定时开关机未启用，清理已设规则"
-    systemctl disable --now "$SHUTDOWN_SVC"      >/dev/null 2>&1 || true
-    systemctl disable --now s2-power-shutdown.timer >/dev/null 2>&1 || rc=1
+    if systemctl is-active --quiet "$SHUTDOWN_SVC" 2>/dev/null || systemctl is-enabled --quiet "$SHUTDOWN_SVC" 2>/dev/null; then
+      systemctl disable --no-reload --now "$SHUTDOWN_SVC" >/dev/null 2>&1 || true
+    fi
+    if systemctl is-active --quiet s2-power-shutdown.timer 2>/dev/null || systemctl is-enabled --quiet s2-power-shutdown.timer 2>/dev/null; then
+      systemctl disable --no-reload --now s2-power-shutdown.timer >/dev/null 2>&1 || rc=1
+    fi
     clear_rtc
     return "$rc"
   fi
 
   # ---- 定时关机 ----
   if [ -n "$SHUTDOWN_TIME" ]; then
-    if ! cat > "$SHUTDOWN_TIMER" <<EOF
-[Unit]
+    local want
+    want="[Unit]
 Description=S2 定时关机定时器
 [Timer]
 OnCalendar=*-*-* ${SHUTDOWN_TIME}:00
 Persistent=false
 [Install]
-WantedBy=timers.target
-EOF
-    then
-      echo "无法写入定时关机规则"
-      return 1
-    fi
-    if systemctl daemon-reload >/dev/null 2>&1 && \
-       systemctl enable --now s2-power-shutdown.timer >/dev/null 2>&1; then
+WantedBy=timers.target"
+    if [ "$(cat "$SHUTDOWN_TIMER" 2>/dev/null)" != "$want" ]; then
+      if ! printf '%s\n' "$want" > "$SHUTDOWN_TIMER"; then
+        echo "无法写入定时关机规则"
+        return 1
+      fi
+      # 规则变了：重载一次让 systemd 读到新时间，再重启定时器按新时间排期
+      if systemctl daemon-reload >/dev/null 2>&1 && \
+         systemctl enable --no-reload s2-power-shutdown.timer >/dev/null 2>&1 && \
+         systemctl restart s2-power-shutdown.timer >/dev/null 2>&1; then
+        echo "已启用定时关机: ${SHUTDOWN_TIME}，执行前检查星期和维护状态"
+      else
+        echo "定时关机启用失败"
+        rc=1
+      fi
+    elif systemctl is-active --quiet s2-power-shutdown.timer 2>/dev/null && systemctl is-enabled --quiet s2-power-shutdown.timer 2>/dev/null; then
+      echo "定时关机已是 ${SHUTDOWN_TIME}，无需改动"
+    elif systemctl enable --no-reload --now s2-power-shutdown.timer >/dev/null 2>&1; then
       echo "已启用定时关机: ${SHUTDOWN_TIME}，执行前检查星期和维护状态"
     else
       echo "定时关机启用失败"
       rc=1
     fi
   else
-    systemctl disable --now s2-power-shutdown.timer >/dev/null 2>&1 || rc=1
+    if systemctl is-active --quiet s2-power-shutdown.timer 2>/dev/null || systemctl is-enabled --quiet s2-power-shutdown.timer 2>/dev/null; then
+      systemctl disable --no-reload --now s2-power-shutdown.timer >/dev/null 2>&1 || rc=1
+    fi
     echo "未设置关机时间，定时关机关闭"
   fi
-
   # ---- 定时开机 ----
   if [ -n "$BOOT_TIME" ]; then
     local t
