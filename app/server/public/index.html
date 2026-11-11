@@ -168,8 +168,8 @@
                 <div class="fan-manual" id="ov-fan-manual">
                   <label for="fan-slider">手动转速</label>
                   <input type="range" id="fan-slider" min="0" max="100" step="1" value="30" aria-describedby="fan-help">
-                  <output id="fan-slider-val" for="fan-slider">自动</output>
-                  <button class="btn sm" id="fan-auto" type="button" disabled title="回到温控曲线自动调速">恢复自动</button>
+                  <output id="fan-slider-val" for="fan-slider">—</output>
+                  <button class="btn sm is-auto" id="fan-auto" type="button" disabled title="当前按温控曲线自动调速，拖动滑块可手动设定">自动</button>
                 </div>
                 <dl class="fan-rows" id="ov-fan-rows">
                   <div class="fan-row" data-src="cpu"><dt>处理器</dt><dd class="t" id="ov-fan-cpu-t">--</dd><dd class="a" id="ov-fan-cpu-a">--</dd><dd class="d" id="ov-fan-cpu-d">--</dd></div>

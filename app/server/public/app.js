@@ -2092,14 +2092,18 @@
   function showFanManual(on, duty) {
     fanManualOn = on;
     fanManualBox.classList.toggle("is-on", on);
-    // 「恢复自动」一直在原位，自动时只是置灰：按钮和数字的位置固定，轨道宽度才不会变
+    // 按钮一直在原位、宽度固定：自动时它就是「自动」状态标签（不可点），
+    // 一拖滑块进入手动，它变成「恢复自动」。按钮和数字的位置不动，轨道宽度才不会变
     fanAutoBtn.disabled = !on;
+    fanAutoBtn.textContent = on ? "恢复自动" : "自动";
+    fanAutoBtn.classList.toggle("is-auto", !on);
+    fanAutoBtn.title = on ? "回到温控曲线自动调速" : "当前按温控曲线自动调速，拖动滑块可手动设定";
     if (on && duty !== null && duty !== undefined) fanSlider.value = duty;
     // 滑块只表示「手动设了多少」：手动时轨道填到设定值、这一格写百分比；
-    // 自动时轨道不填色、圆点变灰、这一格写「自动」，也不跟着实际转速动 ——
+    // 自动时轨道不填色、圆点变灰、这一格空着（「自动」由右边的按钮说），也不跟着实际转速动 ——
     // 实际转速只看上面的大数字和转速条，两样东西不混在一起
     fanSlider.style.setProperty("--p", on ? fanSlider.value + "%" : "0%");
-    fanSliderVal.textContent = on ? fanSlider.value + "%" : "自动";
+    fanSliderVal.textContent = on ? fanSlider.value + "%" : "—";
   }
   function syncFanManual(sensor) {
     const usable = sensor.fan_manual_ok !== false && !(S2.access && S2.access.danger === false);

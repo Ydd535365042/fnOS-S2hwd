@@ -374,7 +374,11 @@ button:focus:not(:focus-visible),.seg button:focus:not(:focus-visible),.nav-item
 .fan-manual:not(.is-on) input[type=range]::-webkit-slider-thumb{border-color:var(--line-2)}
 .fan-manual:not(.is-on) input[type=range]::-moz-range-thumb{border-color:var(--line-2)}
 .fan-manual:not(.is-on) input[type=range]::-moz-range-progress{background:transparent}
-.fan-manual:not(.is-on) output{color:var(--muted);font-weight:500}
+.fan-manual:not(.is-on) output{color:var(--faint);font-weight:500}
+/* 按钮宽度写死（够放「恢复自动」四个字）：变成「自动」时不缩，轨道和数字都不挪位置 */
+.fan-manual .btn{width:76px;padding:0;justify-content:center;text-align:center}
+/* 自动时按钮是状态标签：高亮、不可点，不是灰掉的「恢复自动」 */
+.fan-manual .btn.is-auto:disabled{opacity:1;cursor:default;background:var(--accent-soft);color:var(--accent);border-color:transparent;font-weight:600}
 .flip-front>.help:last-child{margin-top:auto}
 .fan-svg{flex:none;width:48px;height:48px}
 .fan-svg .ring{fill:none;stroke:var(--line-2);stroke-width:2}

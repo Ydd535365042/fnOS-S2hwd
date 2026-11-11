@@ -262,6 +262,8 @@ class Native:
         last_notice = None
         try:
             while not stopped.is_set():
+                # Taken before the tick: a command written while the tick runs must still count as new.
+                seen = self.control_stamp()
                 try:
                     status = self.fan_tick()
                 except (OSError, ValueError) as error:
@@ -283,7 +285,6 @@ class Native:
                     print(notice.strip(" | ") or "原生温控正常", flush=True)
                     last_notice = notice
                 # Sample every 2 s, but react within 0.25 s when the console changes a control file.
-                seen = self.control_stamp()
                 for _ in range(8):
                     if stopped.wait(0.25) or self.control_stamp() != seen: break
         finally:
