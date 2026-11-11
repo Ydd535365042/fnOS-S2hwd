@@ -1784,6 +1784,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self._json({"ok": False, "msg": "未知接口"}, 404)
 
 
+class QuietServer(ThreadingHTTPServer):
+    """浏览器关页面、手机切后台、代理超时都会把连接中途掐掉。这不是故障，
+    默认的 handle_error 却会往 server.log 打一整段堆栈，把真正的错误淹掉。只对断连静音，其他错误照常记录。"""
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
     global _ALERT_WATCHER
     write_pid()
@@ -1792,7 +1803,7 @@ def main():
     if os.environ.get("S2_ALERTS", "1") != "0":
         _ALERT_WATCHER = alerts.Watcher(ALERTS, _alert_collect)
         _ALERT_WATCHER.start()
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    srv = QuietServer(("0.0.0.0", PORT), Handler)
     sys.stderr.write("S2 硬件控制台 监听 0.0.0.0:%d (root=%s)\n" % (PORT, hwctl.is_root()))
     if not TOKEN:
         # 明确写出来，别让人以为「装了就有口令」。这条警告对应 DANGER_PATHS 的门禁策略。
