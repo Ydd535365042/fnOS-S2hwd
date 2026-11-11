@@ -7,7 +7,7 @@ import threading
 import time
 
 import s2security
-from s2store import integer
+from s2validation import integer
 
 _path = os.path.join(os.path.dirname(__file__), "..", "firmware", "s2_schedule.py")
 _spec = importlib.util.spec_from_file_location("s2_schedule", _path)

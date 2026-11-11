@@ -70,9 +70,6 @@
         <button class="nav-item" data-view="control" title="脚本库、执行日志与已安装模块（按 2）">
           <svg aria-hidden="true"><use href="#i-sliders"/></svg>控制
         </button>
-        <a class="nav-item" href="/manage.html" title="历史监控、备份、计划、告警及其他运维功能">
-          <svg aria-hidden="true"><use href="#i-shield"/></svg>运维
-        </a>
       </nav>
       <span class="spacer"></span>
       <span class="chip neutral" id="top-status"><i class="dot live"></i>连接中…</span>
@@ -94,6 +91,7 @@
           <div class="ntf-active" id="ntf-active" hidden></div>
           <ol class="ntf-list" id="ntf-list" aria-live="polite"></ol>
           <footer class="ntf-ft">
+            <a class="btn sm ghost" href="/notifications.html">邮件 / 推送设置</a>
             <label class="ntf-sys"><input type="checkbox" id="ntf-sys"> 新告警时弹系统通知</label>
             <button class="btn sm ghost" id="ntf-clear" type="button">清空记录</button>
           </footer>
@@ -334,7 +332,7 @@
               </div>
             </div>
             <div class="mini-foot"><span>距下次关机</span><b id="ov-sch-gap">—</b></div>
-            <p class="help">开机靠硬件时钟唤醒，需保持通电；星期与跳过日期在运维中心设置</p>
+            <p class="help">开机靠硬件时钟唤醒，需保持通电；按设备时间执行</p>
           </div>
 
           <div class="card col-8 svc-card">
@@ -487,9 +485,6 @@
     <button class="nav-item" data-view="control">
       <svg aria-hidden="true"><use href="#i-sliders"/></svg><span>控制</span>
     </button>
-    <a class="nav-item" href="/manage.html" title="打开运维功能">
-      <svg aria-hidden="true"><use href="#i-shield"/></svg><span>运维</span>
-    </a>
   </nav>
 </div>
 

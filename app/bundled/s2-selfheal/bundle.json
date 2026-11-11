@@ -1,0 +1,49 @@
+{
+  "id": "s2-selfheal",
+  "title": "S2 自愈最小包",
+  "version": "1.1.10",
+  "filename": "S2自愈最小包-1.1.10.run",
+  "sha256": "505d1ffce9b6cf1e462c7253fc1400adfadfa3d5478fdae38beef46067de555e",
+  "installed_files": [
+    {
+      "path": "/boot/dtb/rockchip/rk3568-witxiaohui-s2.dtb",
+      "sha256": "6dc95aac914dfe5618f09027d31190ae0b84a7efdcc797fa0fa39ecfbbeeb509"
+    },
+    {
+      "path": "/boot/dtb/rockchip/rk3568-nanopi-r5s.dtb",
+      "sha256": "6dc95aac914dfe5618f09027d31190ae0b84a7efdcc797fa0fa39ecfbbeeb509"
+    },
+    {
+      "path": "/usr/local/sbin/fix-fnenv.sh",
+      "sha256": "498390a81076ed598f0bfd88d67f8d86b0c48face600e7aa38637abea8b3854f"
+    },
+    {
+      "path": "/usr/local/sbin/s2-dtb-guard.sh",
+      "sha256": "e5bb21d203fe519a607b3197bbc740b9248c19be967c7adcb41ed69ad7aef8cf"
+    },
+    {
+      "path": "/etc/systemd/system/fix-fnenv.service",
+      "sha256": "90b3410cd1327a7f89fb119c9addddde92371d150f65e3d6cb5270cfd5d7dfc6"
+    },
+    {
+      "path": "/etc/systemd/system/s2-dtb-guard.service",
+      "sha256": "9e062f79a5574f4bf01e315e1144143ab2bac604205f6a53ccadf4cc8c3ef41a"
+    },
+    {
+      "path": "/etc/systemd/system/s2-dtb-guard.path",
+      "sha256": "0acfc9aec86b1e952594b85fc2a4ae1dd849f9abc3ec6e10a800a7cd806826e9"
+    },
+    {
+      "path": "/etc/systemd/system/s2-dtb-guard-realize.service",
+      "sha256": "07eb15681bd359d11aeece4b143aa7e96705eef9146f112f81b677de6214ec60"
+    },
+    {
+      "path": "/etc/systemd/system/scsi-rescan.service",
+      "sha256": "92fc6f799a9b661207c6b421d1363d08935fa7a95745c2e33bf1b474e836ac3d"
+    },
+    {
+      "path": "/var/lib/s2-dtb-guard/dtb.ref",
+      "sha256": "6dc95aac914dfe5618f09027d31190ae0b84a7efdcc797fa0fa39ecfbbeeb509"
+    }
+  ]
+}

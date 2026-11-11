@@ -101,12 +101,12 @@
   }
 
   // 写请求不自动重试，避免超时后重复执行硬件操作或脚本。
-  async function apiPost(path, obj, raw) {
+  async function apiPost(path, obj, raw, timeout = 60000) {
     const opt = { method: "POST", headers: { ...authHeaders(), "X-S2-Request": "1" } };
     opt.headers["Content-Type"] = raw !== undefined ? "application/octet-stream" : "application/json";
     opt.body = raw !== undefined ? raw : JSON.stringify(obj || {});
     try {
-      const { response, data } = await fetchAPI(path, opt, 60000);
+      const { response, data } = await fetchAPI(path, opt, timeout);
       if (response.status === 401) authExpired();
       if (!response.ok) {
         data.ok = false;
@@ -124,7 +124,7 @@
     if (S2.access && S2.access.danger === false && !["status", "hwinfo", "logs"].includes(op)) {
       return Promise.resolve({ ok: false, msg: "请先在飞牛「应用设置 → 配置」设置访问口令" });
     }
-    return apiPost("/api/hw", { op: op, params: params || {} });
+    return apiPost("/api/hw", { op: op, params: params || {} }, undefined, op === "patch" ? 200000 : 60000);
   };
 
   /* 全局状态。state 是 /api/state 的完整快照（含配置、脚本、模块），
@@ -3003,7 +3003,8 @@
           // 卸载虽然危险，但它是个按钮，不是一条链接 —— 给 danger 变体（红字 + 淡红描边），
           // 第一次点变成实心红确认态，两级都和「停用」区分得开。
           // 模块停着的时候，「启用」才是这一行唯一该做的事，用 primary 指出来。
-          '<button class="btn sm' + (m.enabled ? "" : " primary") + '" data-act="apply"' + (m.enabled ? " disabled" : "") + ">启用</button>" +
+          '<button class="btn sm' + (m.enabled ? "" : " primary") + '" data-act="apply"' + (m.enabled && !m.bundled ? " disabled" : "") + ">" + (m.bundled ? (m.enabled ? "更新/重装" : "安装") : "启用") + "</button>" +
+          (m.bundled ? '<button class="btn sm" data-act="status">查看状态</button>' : "") +
           '<button class="btn sm" data-act="remove"' + (m.enabled ? "" : " disabled") + ">停用</button>" +
           '<button class="btn sm danger" data-act="uninstall">卸载</button>' +
         "</div>" +
@@ -3014,6 +3015,12 @@
   async function modAction(id, act, btn) {
     const m = MODULES.find((x) => x.id === id);
     if (!m) return;
+    if (m.bundled && act === "apply") {
+      const approved = await reviewScript({name: m.title, source: "内置完整包 " + m.version, changed: true,
+        sha256: m.sha256 || "", content: m.desc,
+        risks: [id === "s2-selfheal" ? "安装或更新完整自愈包，包括设备树、引导配置和守护服务；原包会备份，不会自动重启。" : "安装开关机指示灯与提示音组件，停用旧的重复灯光服务。"]});
+      if (!approved) return;
+    }
     if (act === "uninstall") {
       // 卸载会删目录、删 service —— 两步确认，第一次点只是把按钮变成警告
       if (btn.dataset.armed !== "1") {
@@ -3040,8 +3047,12 @@
       btn.dataset.armed = "0";
       btn.classList.remove("armed");
     }
-    toast(res.msg || (res.ok ? "完成" : "失败"), res.ok ? "ok" : "err");
-    if (res.ok) refreshState();
+    setTermTarget(m.title);
+    termReset("$ " + m.title + " · " + act);
+    termWrite(res.data?.text || res.detail || res.msg || (res.ok ? "完成" : "失败"), res.ok ? "ok" : "err");
+    termStatus.textContent = res.ok ? "完成" : "失败";
+    toast(m.title + (res.ok ? "：操作完成，详情见执行日志" : "：操作失败，详情见执行日志"), res.ok ? "ok" : "err");
+    refreshState();
   }
 
   document.getElementById("mod-list").addEventListener("click", (e) => {

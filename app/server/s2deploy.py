@@ -43,8 +43,16 @@ class Deployment(Activation):
         for name in ("s2-power-schedule.service", "s2-power-shutdown.service", "s2-power-shutdown.timer"):
             files["firmware/"+name] = "etc/systemd/system/"+name
         for name in LIGHTS: files["agent/"+name] = "etc/systemd/system/"+name
+        for ident in ("s2-selfheal", "s2-lights"):
+            base = "etc/s2hwctl/patches.d/" + ident + "/"
+            installed = self.root / base / "module.conf"
+            if installed.exists() and "BUNDLED=1" not in installed.read_text(encoding="utf-8"):
+                raise ValueError("存在同名自定义模块，未覆盖：" + ident)
+            for name in ("module.conf", "module.sh", "bundle.json", "package.run"):
+                files["bundled/"+ident+"/"+name] = base + name
+            files["server/s2bundle.py#"+ident] = base + "runner.py"
         # Validate all sources before replacing any installed file.
-        content = {target: (source/name).read_bytes() for name,target in files.items()}
+        content = {target: (source/name.split("#")[0]).read_bytes() for name,target in files.items()}
         s2dtb.validate(content["usr/local/lib/fnos-s2/"+s2dtb.NAME])
         tracked = list(content) + ["etc/s2-power-schedule.conf", "etc/s2hwctl/backend", "etc/s2hwctl/fan.conf"]
         previous = {name: (s2dtb.read_regular(self.root/name, optional=True), (self.root/name).stat().st_mode & 0o777 if (self.root/name).exists() else None) for name in tracked}
@@ -111,10 +119,20 @@ class Deployment(Activation):
         return {"enabled": enabled}
 
     def scripts(self, source, directory):
-        source, directory = Path(source)/"server/default_scripts", Path(directory)
+        source, directory = Path(source), Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
-        legacy = json.loads((source/"legacy-defaults.json").read_text(encoding="utf-8"))
+        legacy = json.loads((source/"bundled/retired-defaults.json").read_text(encoding="utf-8"))
         archive = directory.parent/"scripts-legacy"
+        if archive.is_symlink(): raise ValueError("旧脚本备份目录是链接，未迁移任何脚本")
+        # Recover archived user edits. Known retired factory files stay in the backup;
+        # their dependencies were removed, so never advertise them as runnable tools.
+        if archive.is_dir() and not archive.is_symlink():
+            for old in archive.iterdir():
+                if old.is_symlink() or not old.is_file() or old.suffix not in (".sh", ".run"):
+                    continue
+                digest = hashlib.sha256(old.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+                if legacy.get(old.name) != digest and not (directory/old.name).exists():
+                    s2dtb.atomic(directory/old.name, old.read_bytes()); os.chmod(directory/old.name, 0o755)
         for name, digest in legacy.items():
             if Path(name).name != name: raise ValueError("旧脚本清单文件名无效")
             path = directory/name
@@ -122,13 +140,11 @@ class Deployment(Activation):
             if hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest() != digest: continue
             archive.mkdir(exist_ok=True)
             destination = archive/name
-            if destination.exists():
-                if destination.read_bytes() == path.read_bytes(): path.unlink()
-            else: path.rename(destination)
-        for path in source.glob("*.sh"):
-            target = directory/path.name
-            if target.exists() or target.is_symlink(): continue
-            s2dtb.atomic(target, path.read_bytes()); os.chmod(target, 0o755)
+            if destination.exists() and destination.read_bytes() != path.read_bytes():
+                destination = archive/(path.stem + "-" + digest[:10] + path.suffix)
+            if not destination.exists():
+                s2dtb.atomic(destination, path.read_bytes())
+            if destination.read_bytes() == path.read_bytes(): path.unlink()
 
     def apply_dtb(self, candidate):
         # Validate both the candidate and current board before touching any services.
@@ -305,6 +321,12 @@ class Deployment(Activation):
         return {"restored": True, "fan_handoff": handoff, "detail": "硬件控制已交还；温度无法确认安全时保留全速。显式安装的 DTB 与引导守护保留，可独立回滚"}
 
     def check_jobs(self, directory):
+        lock_path = self.root/"run/fnos-s2-bundles.lock"
+        if os.name == "posix" and lock_path.exists():
+            import fcntl
+            with lock_path.open("a+") as stream:
+                try: fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError: raise ValueError("内置模块正在执行，请完成后再卸载")
         for path in (Path(directory)/"jobs").glob("*.pid"):
             if not re.fullmatch(r"[a-f0-9]{32}", path.stem) or path.with_suffix(".rc").exists(): continue
             pid = s2native.read(path)
@@ -314,6 +336,8 @@ class Deployment(Activation):
             except FileNotFoundError: continue
             if b"job_runner.py" in data and path.stem.encode() in data:
                 raise ValueError("仍有脚本正在执行，请等待任务结束后卸载，避免中断引导升级")
+            if b"/etc/s2hwctl/patches.d/" in data and (b"runner.py" in data or b"module.sh" in data):
+                raise ValueError("内置模块正在执行，请完成后再卸载")
         return {"idle": True}
 
     def remove_data(self, directory, app_name):

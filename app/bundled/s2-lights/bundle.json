@@ -1,0 +1,33 @@
+{
+  "id": "s2-lights",
+  "title": "S2 电源灯美化",
+  "version": "1.1.0",
+  "filename": "S2电源灯美化包-1.1.0.run",
+  "sha256": "a14a0ba7cb884772a60b7be42b40a0519c621f95802f10b25ce28efce5165ccc",
+  "installed_files": [
+    {
+      "path": "/usr/local/sbin/led-indicator.sh",
+      "sha256": "a4616642169b476f598096350acdd361326f9087063cd252cf5582996d926c25"
+    },
+    {
+      "path": "/usr/local/sbin/led-pwm.py",
+      "sha256": "23ea0b70eb801cf2dc9bf682326fad8faf79c613cdc532483181fb3bcfbdaf41"
+    },
+    {
+      "path": "/usr/local/sbin/sata-led-watchdog.sh",
+      "sha256": "b959aa147af62c785786ae063c5b706153222a33f6e5a20d7a9433f1d8044ba5"
+    },
+    {
+      "path": "/etc/systemd/system/led-boot.service",
+      "sha256": "c07af52c7b12a4b139cdcecea91ccef9623f45f30385037cca60dd5a2b5258a5"
+    },
+    {
+      "path": "/etc/systemd/system/sata-led-watchdog.service",
+      "sha256": "2bd9ca071ef20ab02c401050d82e5a1f0902a627d4531caa03ad542ca15a30cc"
+    },
+    {
+      "path": "/etc/systemd/system/led-shutdown.service",
+      "sha256": "70b92d7a28a71a5b58ea9e30f4c645c267f66661cec41c9ec9995c96a4b284c7"
+    }
+  ]
+}

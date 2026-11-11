@@ -1,0 +1,747 @@
+#!/bin/bash
+#S2PKG:type=patch ver=1.1.10 root=1 target=server
+# =====================================================================
+# S2è‡ªæ„ˆæœ€å°åŒ….run â€”â€” S2ï¼ˆRK3568 / WITXIAOHUIï¼‰è®¾å¤‡æ ‘æœ€å°è‡ªæ„ˆ å®‰è£…Â·å¸è½½Â·æŸ¥çœ‹ ä¸‰åˆä¸€
+#
+# ä¸€ä¸ªåŒ…ã€ä¸€ä»½æ¸…å•ï¼Œå®‰è£…ä¸å¸è½½æ°¸è¿œåŒç‰ˆæœ¬ï¼š
+#   å®‰è£…ï¼šå®šåˆ¶ DTB + fnEnv è‡ªæ„ˆ + ç¬¬ä¸€æ—¶é—´ç¦ç”¨å…¶ä»–ä¼šæ”¹ fnEnv/dtb çš„é’©å­
+#   å¸è½½ï¼šæŒ‰åŒä¸€ä»½æ¸…å•æŠŠæœ¬åŒ…çš„é’©å­/è„šæœ¬/é…ç½®/çŠ¶æ€å…¨éƒ¨æ‹†æ‰ï¼Œå‹åˆ¶åŸæ ·äº¤è¿˜ï¼›
+#         /boot ä¸‹çš„ DTB ä¸ fdtfile ä¸€å¾‹ä¸åŠ¨ â€”â€” æœ¬åŒ…çš„ DTB å…¼å®¹æ—§ç‰ˆï¼Œ
+#         æŠ˜å›æ—§å­—èŠ‚ç­‰äºæŠŠä¸€ä»½æœ‰ç¼ºé™·çš„è®¾å¤‡æ ‘æ”¾å›å¼•å¯¼é“¾ï¼Œæ²¡æœ‰æ„ä¹‰ã€‚
+#         æ—§çš„ dtb å­—èŠ‚æ”¶åœ¨ /var/backups/s2-heal-*.tar.gz é‡Œï¼Œéœ€è¦æ—¶è‡ªå·±å–ã€‚
+#
+# ç”¨æ³•ï¼š
+#   bash <åŒ…>.run --check                     # å… rootï¼šåªæ ¡éªŒåŒ…å®Œæ•´æ€§
+#   bash <åŒ…>.run --status                    # å… rootï¼šåªè¯»æŸ¥çœ‹ç°çŠ¶
+#   bash <åŒ…>.run --install  --dry-run        # å… rootï¼šæ‰“å°å®‰è£…è®¡åˆ’
+#   sudo bash <åŒ…>.run --install              # å®‰è£…
+#   sudo bash <åŒ…>.run --uninstall --dry-run  # æ‰“å°å¸è½½è®¡åˆ’
+#   sudo bash <åŒ…>.run --uninstall            # å¸è½½ï¼ˆä¼šå…ˆé—®ä¸€å¥ï¼‰
+#   sudo bash <åŒ…>.run --uninstall --yes      # ä¸é—®ï¼Œç›´æ¥å¸
+#
+# ä¸å…¶ä»–è¡¥ä¸çš„å…³ç³»ï¼ˆæœ¬åŒ…ç«‹åœºï¼‰ï¼š
+#   å‘ç°åˆ«çš„è‡ªæ„ˆå±‚ä¸æ‹’ç»å®‰è£…ï¼Œè€Œæ˜¯è£…å®Œç«‹åˆ»å‹åˆ¶å®ƒ â€”â€” åªå†™ drop-in / æŠŠè£¸é’©å­ç§»å‡ºç›®å½•ï¼Œ
+#   å¯¹æ–¹æ–‡ä»¶ä¸€ä¸ªå­—èŠ‚ä¸æ”¹ï¼›--uninstall æ—¶åŸæ ·äº¤è¿˜ã€‚
+#
+# å‰ç½®ï¼šç°åœ¨çš„ DTB æ˜¯å®Œæ•´åˆè§„çš„ä¸€å¥—ï¼ŒfnOS è‡ªå¸¦æœåŠ¡ä¸é©±åŠ¨å°±èƒ½æ¥ç®¡ç¡¬ä»¶ï¼›
+#       æ—§è¡¥ä¸é‚£å¥—â€œæœ‰ç¼ºé™·çš„ dtb + ä¸€å †æœåŠ¡å»è¡¥â€å·²ç»ä¸æˆç«‹ã€‚
+#
+# ä¸å«å…³æœºé’©å­ï¼šæœ¬åŒ…åªç®¡å¼€æœºä¸å®æ—¶ä¸¤å¤„ï¼ˆ--boot / --realizeï¼‰ã€‚å…³æœºæŒ‡ç¤ºç¯ä¸æç¤ºéŸ³
+# å±äºé€‰è£…çš„ç¾åŒ–åŒ…ï¼ˆled-shutdown.serviceï¼‰ï¼Œè·Ÿæœ¬åŒ…å®Œå…¨åˆ†ç¦»ã€‚
+# 1.1.1 åŠæ›´æ—©è‡ªå¸¦çš„ /etc/systemd/system-shutdown/zz-s2-dtb-guard.sh ä¼šåœ¨å®‰è£…/å¸è½½æ—¶
+# è‡ªåŠ¨é€€å½¹ï¼ˆå…ˆç•™åº•åˆ°å¤‡ä»½ç›®å½•å†åˆ ï¼‰ï¼Œä¸éœ€è¦ä½ æ‰‹å·¥æ¸…ã€‚
+#
+# åŒ…ä¿¡æ¯ï¼šç‰ˆæœ¬ 1.1.10
+#         è½½è· SHA256 d52f57be70d2459f6a14f2ecaabe34a6c53bcaa79d13d27ab0d35fed2895342a
+# =====================================================================
+set -u
+SELF="$0"          # è‡ªè§£å‹è½½ä½“ï¼šä»è‡ªèº«æœ«å°¾å–è½½è·
+
+VERSION='1.1.10'
+PAYLOAD_SHA256='d52f57be70d2459f6a14f2ecaabe34a6c53bcaa79d13d27ab0d35fed2895342a'
+DTB_MD5='5a72e85526b1372ffffaddee7c9da3e2'
+DTB_SIZE='74587'
+EXPECTED_MODEL='Rockchip RK3568 WITXIAOHUI S2 Board NAS'
+DTB_SHA256='6dc95aac914dfe5618f09027d31190ae0b84a7efdcc797fa0fa39ecfbbeeb509'
+
+DTB_NAME='rk3568-witxiaohui-s2.dtb'
+DTB_TARGET="/boot/dtb/rockchip/$DTB_NAME"
+FNENV='/boot/fnEnv.txt'
+SNAPSHOT='/boot/fnEnv.txt.ours'
+FDTFILE_LINE='fdtfile=rockchip/rk3568-witxiaohui-s2.dtb'
+FALLBACK_DTB='/boot/dtb/rockchip/rk3568-nanopi-r5s.dtb'
+GUARD='/usr/local/sbin/s2-dtb-guard.sh'
+GUARD_CONF='/etc/s2-dtb-guard.conf'
+GUARD_STATE='/var/lib/s2-dtb-guard'
+BKROOT='/var/backups'
+OLD_BK='/boot/.s2run-bak'          # æ—§ç‰ˆ 1.0.x çš„å¤‡ä»½ç›®å½•ï¼Œå¸è½½æ—¶ä¹Ÿè®¤
+STAMP=$(date +%Y%m%d-%H%M%S)
+
+R="${S2_ROOT:-}"                   # æµ‹è¯•æ²™ç®±æ ¹ï¼›çœŸæœºä¸ºç©º
+[ -n "$R" ] && export S2_ROOT      # å­è¿›ç¨‹ï¼ˆå®ˆå«è„šæœ¬ï¼‰ä¹Ÿèµ°åŒä¸€ä¸ªæ²™ç®±
+UNITS='fix-fnenv.service s2-dtb-guard.service s2-dtb-guard.path s2-dtb-guard-realize.service scsi-rescan.service'
+ENABLE='multi-user.target:fix-fnenv.service multi-user.target:s2-dtb-guard.service multi-user.target:s2-dtb-guard.path multi-user.target:scsi-rescan.service'
+
+MANIFEST='644|/boot/dtb/rockchip/rk3568-witxiaohui-s2.dtb|files/rk3568-witxiaohui-s2.dtb|5a72e85526b1372ffffaddee7c9da3e2
+644|/boot/dtb/rockchip/rk3568-nanopi-r5s.dtb|files/rk3568-witxiaohui-s2.dtb|5a72e85526b1372ffffaddee7c9da3e2
+755|/usr/local/sbin/fix-fnenv.sh|files/fix-fnenv.sh|fea5d56b3a6e1ea0514466a42a63962a
+755|/usr/local/sbin/s2-dtb-guard.sh|files/s2-dtb-guard.sh|022bb01a0beda60c9b9b0f2deb6314ac
+644|/etc/systemd/system/fix-fnenv.service|files/fix-fnenv.service|99f174e011fe163deaeed55241e38b59
+644|/etc/systemd/system/s2-dtb-guard.service|files/s2-dtb-guard.service|1d1c656e908e61942b5eb81dfbbc8ab2
+644|/etc/systemd/system/s2-dtb-guard.path|files/s2-dtb-guard.path|14278a70770e66a1093710132349f9bf
+644|/etc/systemd/system/s2-dtb-guard-realize.service|files/s2-dtb-guard-realize.service|3069c158c82da349dd26ef6e596fe098
+644|/etc/systemd/system/scsi-rescan.service|files/scsi-rescan.service|6af9a13708618da9493ad5ed6378fb6b
+644|/var/lib/s2-dtb-guard/dtb.ref|files/rk3568-witxiaohui-s2.dtb|5a72e85526b1372ffffaddee7c9da3e2'
+GUARD_CONF_TEXT=$(cat <<'CONFEOF'
+PIN_FDTFILE=rockchip/rk3568-witxiaohui-s2.dtb
+DTB_NAMES=rk3568-witxiaohui-s2.dtb rk3568-nanopi-r5s.dtb
+DTB_REF=/var/lib/s2-dtb-guard/dtb.ref
+DTB_SHA256=6dc95aac914dfe5618f09027d31190ae0b84a7efdcc797fa0fa39ecfbbeeb509
+SELF_UNITS=fix-fnenv.service scsi-rescan.service s2-dtb-guard.service s2-dtb-guard-realize.service s2-dtb-guard.path
+SELF_SCRIPTS=fix-fnenv.sh s2-dtb-guard.sh zz-s2-dtb-guard.sh
+RIVAL_UNITS=s2-guard.service s2-guard.timer selfheal.service selfheal-hourly.service selfheal-hourly.timer s2-fix-on-shutdown.service dtb-check.service
+RIVAL_SCRIPTS=s2-guard.sh s2ver.sh selfheal-check.sh dtb-fix-on-shutdown.sh dtb-check.sh
+CONFEOF
+)
+
+say()  { printf '%s\n' "$*"; }
+step() { printf '\n[%s] %s\n' "$1" "$2"; }
+die()  { echo "âŒ $*" >&2; exit 1; }
+T()    { printf '%s%s' "$R" "$1"; }                  # è®¾å¤‡è·¯å¾„ â†’ å¸¦æ²™ç®±å‰ç¼€
+need_root() { [ -n "$R" ] && return 0; [ "$(id -u)" = 0 ] || die "è¯¥æ“ä½œéœ€è¦ rootï¼šsudo bash $0 $1"; }
+live() { [ -n "${S2_FORCE_LIVE:-}" ] && return 0; [ -z "$R" ] && [ -d /run/systemd/system ]; }
+sys()  { if live; then systemctl "$@" >/dev/null 2>&1 || true; else say "    (æ²™ç®±) would: systemctl $*"; fi; }
+sysq() { live && systemctl "$@" >/dev/null 2>&1; }
+u_state() { if live; then systemctl is-enabled "$1" 2>&1 | head -n1; else echo "sandbox"; fi; }
+unlock_file() {   # immutable ä¼šè®©å†…æ ¸ç›´æ¥æ‹’å†™
+    local p="$1" a
+    [ -f "$p" ] || return 0
+    command -v lsattr >/dev/null 2>&1 || return 0
+    a=$(lsattr -d "$p" 2>/dev/null | awk '{print $1}')
+    case "$a" in *i*) chattr -i "$p" 2>/dev/null && say "    è§£é’‰ $pï¼ˆåŸä¸º chattr +iï¼‰" || say "    !! $p è§£ä¸å¼€ immutable" ;; esac
+}
+md5_of() { md5sum "$1" 2>/dev/null | awk '{print $1}'; }
+model_now() { tr -d '\0' 2>/dev/null < "$R/proc/device-tree/model"; }
+# /boot åœ¨ fnOS ä¸Šå¸¸æ˜¯åªè¯»æŒ‚è½½ã€‚å®‰è£…è¦å¾€é‡Œå†™ dtb å’Œ fnEnvï¼Œå†™å‰å¿…é¡»è‡ªå·±æŠŠå®ƒæŒ‚æˆå¯å†™ï¼Œ
+# å†™å®Œå†æŒ‚å›åªè¯»â€”â€”å¦åˆ™ä¼šä¸€è·¯ die åœ¨ã€Œå†™å…¥å¤±è´¥ã€æˆ–ã€Œå†™å…¥åè¢«æ”¹å›ã€ï¼Œçœ‹èµ·æ¥åƒ immutableã€‚
+BOOT_RW=0
+boot_rw() {
+    live || return 0
+    [ "$BOOT_RW" = 1 ] && return 0
+    mount | grep -qE ' /boot (.*,)?ro([ ,]|$)' || return 0
+    if mount -o remount,rw /boot >/dev/null 2>&1; then
+        BOOT_RW=1; say "    /boot åŸä¸ºåªè¯»ï¼Œå·²ä¸´æ—¶ remount rw"
+    else
+        say "    âš  /boot æ˜¯åªè¯»ä¸” remount å¤±è´¥ï¼Œåé¢å†™ /boot çš„æ­¥éª¤ä¼šå¤±è´¥"
+    fi
+}
+boot_ro() {
+    [ "$BOOT_RW" = 1 ] || return 0
+    if mount -o remount,ro /boot >/dev/null 2>&1; then
+        say "    /boot å·²æŒ‚å›åªè¯»"
+    else
+        say "    âš  /boot æœªèƒ½æŒ‚å›åªè¯»ï¼ˆä¸å½±å“å¼€æœºï¼Œåªæ˜¯å’Œè£…å‰çŠ¶æ€ä¸åŒï¼‰"
+    fi
+    BOOT_RW=0
+}
+
+TMPDIR_PAYLOAD=''
+cleanup() { [ -n "$TMPDIR_PAYLOAD" ] && rm -rf "$TMPDIR_PAYLOAD"; }
+trap cleanup EXIT
+
+# è½½è·ä»¥çœŸæ­£çš„ tar.gz äºŒè¿›åˆ¶è¿½åŠ åœ¨æœ¬æ–‡ä»¶æœ«å°¾ã€æ ‡è®°è¡Œä¹‹åï¼›è§£åŒ…æ—¶è‡ªå®šä½ï¼Œä¸å†™æ­»è¡Œå·
+M1='#__S2_PAYLOAD'; M2='_BELOW__'; PAYLOAD_MARK="$M1$M2"
+unpack() {
+    TMPDIR_PAYLOAD=$(mktemp -d /tmp/s2run.XXXXXX) || die "æ— æ³•åˆ›å»ºä¸´æ—¶ç›®å½•"
+    ln=$(grep -an "^$PAYLOAD_MARK\$" "$SELF" 2>/dev/null | head -n1 | cut -d: -f1)
+    [ -n "$ln" ] || die "æ‰¾ä¸åˆ°è½½è·æ ‡è®°ï¼ˆè¿™ä¸ªæ–‡ä»¶ä¸æ˜¯æ ‡å‡†è‡ªè§£å‹åŒ…ï¼‰"
+    tail -n +"$((ln + 1))" "$SELF" > "$TMPDIR_PAYLOAD/payload.tar.gz" \
+        || die "è½½è·æŠ½å–å¤±è´¥ï¼ˆåŒ…å¯èƒ½è¢«æˆªæ–­ï¼‰"
+    got=$(sha256sum "$TMPDIR_PAYLOAD/payload.tar.gz" | awk '{print $1}')
+    [ "$got" = "$PAYLOAD_SHA256" ] || die "è½½è· SHA256 ä¸ç¬¦ï¼š$got != $PAYLOAD_SHA256ï¼ˆåŒ…å·²æŸåï¼‰"
+    tar -xzf "$TMPDIR_PAYLOAD/payload.tar.gz" -C "$TMPDIR_PAYLOAD" || die "è½½è·è§£åŒ…å¤±è´¥"
+    say "    è½½è·æ ¡éªŒé€šè¿‡ï¼ˆsha256 ä¸å¤´éƒ¨ä¸€è‡´ï¼‰"
+}
+
+verify_manifest() {
+    bad=0
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        f="$TMPDIR_PAYLOAD/$src"
+        if [ ! -f "$f" ]; then say "    !! è½½è·ç¼ºæ–‡ä»¶ $src"; bad=1; continue; fi
+        got=$(md5sum "$f" | awk '{print $1}')
+        [ "$got" = "$md5" ] || { say "    !! $src md5 ä¸ç¬¦ $got != $md5"; bad=1; }
+    done <<EOF
+$MANIFEST
+EOF
+    [ "$bad" -eq 0 ] || die "æ¸…å•æ ¡éªŒå¤±è´¥"
+    say "    æ¸…å• $(printf '%s\n' "$MANIFEST" | grep -c '|') é¡¹å…¨éƒ¨ä¸€è‡´"
+}
+
+# è£…ä¹‹å‰ / å¸ä¹‹å‰å…ˆçœ‹ä¸€çœ¼æœºå™¨ä¸Šè¿˜æœ‰è°åœ¨ç®¡ dtb â€”â€” åªæç¤ºï¼Œä¸æ‹¦
+detect_rivals() {
+    RV=''
+    for d in "$R/etc/systemd/system" "$R/usr/lib/systemd/system" "$R/lib/systemd/system"; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*.service "$d"/*.timer; do
+            [ -f "$f" ] || continue
+            b=${f##*/}
+            case "$b" in
+                fix-fnenv.service|s2-dtb-guard.service|s2-dtb-guard.path|\
+                s2-dtb-guard-realize.service|scsi-rescan.service) continue ;;
+            esac
+            if grep -qE 'fnEnv|fdtfile|/boot/dtb|s2ver\.sh|selfheal' "$f" 2>/dev/null; then
+                RV="$RV $b"
+            fi
+        done
+    done
+    for d in "$R/usr/lib/systemd/system-shutdown" "$R/etc/systemd/system-shutdown"; do
+        [ -d "$d" ] || continue
+        for f in "$d"/*; do
+            [ -f "$f" ] || continue
+            [ "${f##*/}" = "zz-s2-dtb-guard.sh" ] && continue
+            case "${f##*/}" in mdadm.shutdown|nutshutdown) continue ;; esac
+            RV="$RV shutdown:${f##*/}"
+        done
+    done
+}
+report_rivals() {
+    if [ -z "$RV" ]; then say "    æœªå‘ç°å…¶ä»–ä¼šæ”¹ fnEnv/dtb çš„é’©å­"; return 0; fi
+    say "    å‘ç°å…¶ä»–è‡ªæ„ˆé’©å­ï¼ˆè£…å®Œä¼šç«‹åˆ»å‹åˆ¶ï¼Œä¸åŠ¨å®ƒä¸€ä¸ªå­—èŠ‚ï¼‰ï¼š"
+    for x in $RV; do say "      - $x"; done
+}
+
+cmd_check() {
+    say "== åŒ…è‡ªæ£€ï¼ˆå… rootï¼Œä¸ç¢°è®¾å¤‡ï¼‰"
+    say "  ç‰ˆæœ¬ : $VERSION"
+    say "  dtb  : $DTB_NAME  md5=$DTB_MD5  size=$DTB_SIZE"
+    unpack; verify_manifest
+    say "  ç»“è®º : åŒ…å®Œæ•´ï¼Œå¯å®‰è£…"
+}
+
+cmd_status() {
+    say "== S2 è‡ªæ„ˆæœ€å°åŒ… Â· ç°çŠ¶ï¼ˆåªè¯»ï¼‰"
+    say "  åŒ…ç‰ˆæœ¬      : $VERSION"
+    d=$(T "$DTB_TARGET"); r=$(T "$FALLBACK_DTB")
+    say "  æœ¬åŒ… dtb    : $( [ -f "$d" ] && printf '%s  %s B' "$(md5_of "$d")" "$(stat -c%s "$d")" || echo ç¼ºå¤±)  (æœŸæœ› $DTB_MD5 / $DTB_SIZE B)"
+    say "  r5s åä¸‹ dtb: $( [ -f "$r" ] && printf '%s  %s B' "$(md5_of "$r")" "$(stat -c%s "$r")" || echo ç¼ºå¤±)"
+    say "  fdtfile     : $(grep -m1 '^fdtfile' "$(T "$FNENV")" 2>/dev/null || echo æœªæ‰¾åˆ°)"
+    say "  æœŸæœ› fdtfile: $FDTFILE_LINE"
+    say "  å®šç¨¿ sha256 : $DTB_SHA256"
+    say "  ç›®æ ‡ sha256 : $( [ -f "$d" ] && sha256sum "$d" 2>/dev/null | cut -d' ' -f1 || echo ç¼ºå¤±)"
+    say "  è¿è¡Œæ€ model: $(model_now)ï¼ˆä»…ä¾›å‚è€ƒï¼Œä¸ä½œåˆ¤æ®ï¼‰"
+    say "  æœŸæœ› model  : $EXPECTED_MODEL"
+    for u in $UNITS; do
+        printf '  %-32s enabled=%-10s active=%s\n' "$u" "$(u_state "$u")" \
+               "$(live && systemctl is-active "$u" 2>&1 | head -n1 || echo sandbox)"
+    done
+    say "  å®ˆæŠ¤é…ç½®    : $( [ -f "$(T "$GUARD_CONF")" ] && echo "å­˜åœ¨ $(T "$GUARD_CONF")" || echo æ— )"
+    say "  éš”ç¦»åŒº      : $( [ -d "$(T "$GUARD_STATE")/quarantine" ] && ls -1 "$(T "$GUARD_STATE")/quarantine" 2>/dev/null | wc -l || echo 0) é¡¹"
+    detect_rivals; report_rivals
+    if [ -x "$(T "$GUARD")" ]; then
+        say "  å®ˆå«è‡ªè¿°    :"
+        bash "$(T "$GUARD")" --status 2>/dev/null | sed -n '1,6p' | sed 's/^/    /'
+    fi
+    say "  æœ¬åŒ…ç»“è®º    : $(is_installed && echo å·²å®‰è£… || echo æœªå®‰è£…)"
+    say "  å¸è½½        : sudo bash $0 --uninstall"
+}
+
+is_installed() {
+    [ -f "$(T "$DTB_TARGET")" ] && [ -f "$(T "$GUARD")" ] && [ -f "$(T "/etc/systemd/system/fix-fnenv.service")" ]
+}
+
+state_path() { printf '%s' "$(T "$GUARD_STATE")/install.state"; }
+
+cmd_install() {
+    need_root '--install'
+    say "== å®‰è£… S2 è‡ªæ„ˆæœ€å°åŒ… v$VERSION"
+    step 0 'é¢„æ£€'
+    [ -f "$(T "$FNENV")" ] || die "æ‰¾ä¸åˆ° $FNENV"
+    say "    å½“å‰ fdtfile: $(grep -m1 '^fdtfile' "$(T "$FNENV")" || echo æ— )"
+    say "    è¿è¡Œæ€ model: $(model_now)"
+    step '0.1' 'çœ‹æœºå™¨ä¸Šè¿˜æœ‰è°åœ¨ç®¡ dtb'
+    detect_rivals; report_rivals
+    if [ "$DRYRUN" = 1 ]; then
+        say ""
+        say "    dry-runï¼šä»¥ä¸‹åŠ¨ä½œä¸ä¼šæ‰§è¡Œ"
+        while IFS='|' read -r mode target src md5; do
+            [ -n "${mode:-}" ] || continue
+            say "      would install -m $mode <è½½è·/$src> -> $target"
+        done <<EOF
+$MANIFEST
+EOF
+        say "      would write $GUARD_CONFï¼ˆ$(printf '%s\n' "$GUARD_CONF_TEXT" | grep -c '=') è¡Œï¼‰"
+        say "      would fix $FNENV -> $FDTFILE_LINE"
+        say "      would remount rw /bootï¼ˆè‹¥å®ƒæœ¬æ¥æ˜¯åªè¯»ï¼‰ï¼Œè£…å®Œå†æŒ‚å›åªè¯»"
+        say "      would enable: $ENABLE"
+        say "      would run $GUARD --bootï¼ˆç¬¬ä¸€æ—¶é—´å‹åˆ¶ä¸Šé¢åˆ—çš„é’©å­ï¼‰"
+        [ -f "$(T "/etc/systemd/system-shutdown/zz-s2-dtb-guard.sh")" ] \
+            && say "      would retire /etc/systemd/system-shutdown/zz-s2-dtb-guard.shï¼ˆæ—§ç‰ˆå…³æœºé’©å­ï¼Œç•™åº•ååˆ ï¼‰"
+        return 0
+    fi
+
+    step 1 'è§£åŒ…å¹¶æ ¡éªŒè½½è·'
+    unpack; verify_manifest
+
+    step 2 'å¤‡ä»½å°†è¢«è¦†ç›–/åˆ é™¤çš„ä¸€åˆ‡'
+    bkdir="$BKROOT/s2-heal-$STAMP"; bkdir=$(T "$bkdir")
+    mkdir -p "$bkdir" || die "å»ºä¸äº†å¤‡ä»½ç›®å½• $bkdir"
+    : > "$bkdir/targets.list"
+    st=$(state_path); mkdir -p "$(dirname "$st")" || die "å»ºä¸äº† $GUARD_STATE"
+    prev_new=''; prev_orig=''
+    if [ -f "$st" ]; then                    # é‡è£…è¦æ²¿ç”¨ç¬¬ä¸€æ¬¡çš„çŠ¶æ€ï¼Œå¦åˆ™ä¼šæŠŠâ€œè£…åæ‰å‡ºç°â€å½“â€œåŸæ¥å°±æœ‰â€
+        prev_new=$(sed -n 's/^NEW //p' "$st")
+        prev_orig=$(grep -m1 '^FDTFILE_ORIG=' "$st" | cut -d= -f2-)
+        say "    å·²æœ‰å®‰è£…çŠ¶æ€ï¼šæ²¿ç”¨åŸ fdtfile='${prev_orig}'ã€NEW åå• $(printf '%s\n' "$prev_new" | grep -c .) é¡¹"
+    fi
+    is_prev_new() { printf '%s\n' "$prev_new" | grep -qxF "$1"; }
+    : > "$st.new"
+    printf 'TS=%s\n' "$STAMP" >> "$st.new"
+    printf 'FDTFILE_ORIG=%s\n' "${prev_orig:-$(grep -m1 '^fdtfile=' "$(T "$FNENV")" | cut -d= -f2-)}" >> "$st.new"
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        p=$(T "$target")
+        if is_prev_new "$target"; then
+            printf 'NEW %s\n' "$target" >> "$st.new"
+            say "    $target æ˜¯æœ¬åŒ…ä¸Šæ¬¡è£…çš„ï¼Œä¸å†å¤‡ä»½"
+            continue
+        fi
+        printf '%s\n' "$p" >> "$bkdir/targets.list"
+        if [ -e "$p" ]; then
+            cp -a "$p" "$bkdir/$(basename "$p").orig" && say "    å¤‡ä»½ $target -> $(basename "$bkdir/$(basename "$p").orig")"
+            [ -e "${p}.orig-bak" ] || cp -a "$p" "${p}.orig-bak" 2>/dev/null || true
+        else
+            printf 'NEW %s\n' "$target" >> "$st.new"
+            say "    $target åŸæœ¬ä¸å­˜åœ¨ï¼ˆå¸è½½æ—¶åˆ æ‰ï¼‰"
+        fi
+    done <<EOF
+$MANIFEST
+EOF
+    cp -a "$(T "$FNENV")" "$bkdir/fnEnv.txt.orig" && say "    å¤‡ä»½ fnEnv.txt"
+    printf '%s\n' "$(T "$FNENV")" >> "$bkdir/targets.list"
+    tgz=$(T "$BKROOT/s2-heal-$STAMP.tar.gz")
+    # shellcheck disable=SC2046
+    tar -czPf "$tgz" $(cat "$bkdir/targets.list") 2>/dev/null && say "    $tgz  $(stat -c%s "$tgz" 2>/dev/null) B"
+    mv -f "$st.new" "$st"
+
+    # 1.1.1 åŠæ›´æ—©åœ¨ /etc/systemd/system-shutdown ç•™äº†ä¸€ä¸ªè‡ªå®¶å…³æœºé’©å­ï¼ˆåªåšç¯æ•ˆï¼‰ã€‚
+    # ç°åœ¨ç¯æ•ˆå½’ç¾åŒ–åŒ…ï¼Œæœ¬åŒ…ä¸å†ç¢°å…³æœºé˜¶æ®µï¼šå¸¦è‡ªå®¶æŒ‡çº¹çš„æ—§æ–‡ä»¶ç•™åº•ååˆ æ‰ã€‚
+    hook=$(T "/etc/systemd/system-shutdown/zz-s2-dtb-guard.sh")
+    if [ -f "$hook" ] && grep -q 's2-dtb-guard.sh --shutdown' "$hook" 2>/dev/null; then
+        cp -a "$hook" "$bkdir/zz-s2-dtb-guard.sh.legacy" \
+            && say "    ç•™åº•æ—§ç‰ˆå…³æœºé’©å­ -> zz-s2-dtb-guard.sh.legacy"
+        rm -f "$hook" && say "    é€€å½¹æ—§ç‰ˆå…³æœºé’©å­ï¼šæœ¬åŒ…ä¸å†ç®¡å…³æœºé˜¶æ®µï¼ˆç¯æ•ˆå½’ç¾åŒ–åŒ…ï¼‰"
+    fi
+
+    step 3 'è½ç›˜ï¼ˆæŒ‰åŒä¸€ä»½æ¸…å•ï¼‰'
+    boot_rw
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        p=$(T "$target")
+        mkdir -p "$(dirname "$p")" || die "å»ºä¸äº† $(dirname "$p")"
+        unlock_file "$p"
+        install -m "$mode" "$TMPDIR_PAYLOAD/$src" "$p" || die "å†™å…¥ $target å¤±è´¥"
+        got=$(md5_of "$p")
+        [ "$got" = "$md5" ] || die "$target è½ç›˜ md5 ä¸ç¬¦ $got != $md5"
+        say "    $target  $(stat -c%s "$p") B  md5=$got"
+    done <<EOF
+$MANIFEST
+EOF
+
+    step 4 "å†™å®ˆæŠ¤é…ç½® $GUARD_CONF"
+    printf '%s\n' "$GUARD_CONF_TEXT" > "$(T "$GUARD_CONF")" || die "å†™ $GUARD_CONF å¤±è´¥"
+    chmod 644 "$(T "$GUARD_CONF")"
+
+    step 5 'æ”¹ fnEnv'
+    cur=$(grep -m1 '^fdtfile=' "$(T "$FNENV")" | cut -d= -f2-)
+    if [ "$cur" = "rockchip/$DTB_NAME" ]; then
+        say "    å·²æ˜¯ $FDTFILE_LINEï¼Œæ— éœ€æ”¹åŠ¨"
+    else
+        unlock_file "$(T "$FNENV")"
+        sed -i -E "s|^[[:space:]]*fdtfile[[:space:]]*=.*|$FDTFILE_LINE|" "$(T "$FNENV")" || die "æ”¹ fdtfile å¤±è´¥"
+        say "    ç”± '$cur' æ”¹ä¸º '$FDTFILE_LINE'"
+    fi
+    cp -a "$(T "$FNENV")" "$(T "$SNAPSHOT")" 2>/dev/null && say "    å¿«ç…§ -> $SNAPSHOT"
+
+    step 6 'å¯ç”¨å®ˆæŠ¤'
+    for u in $ENABLE; do
+        tg=${u%%:*}; un=${u##*:}
+        mkdir -p "$(T "/etc/systemd/system/$tg.wants")" || die "å»ºä¸äº† $tg.wants"
+        ln -sfn "$(T "/etc/systemd/system/$un")" "$(T "/etc/systemd/system/$tg.wants/$un")" \
+            && say "    $un â†’ $tg"
+    done
+    if live; then systemctl daemon-reload >/dev/null 2>&1 || true; fi
+    for u in $UNITS; do
+        printf '    %-32s enabled=%-10s\n' "$u" "$(u_state "$u")"
+    done
+
+    step 7 'ç¬¬ä¸€æ—¶é—´å‹åˆ¶å…¶ä»–é’©å­'
+    if [ -x "$(T "$GUARD")" ] || [ -f "$(T "$GUARD")" ]; then
+        bash "$(T "$GUARD")" --boot 2>&1 | sed 's/^/    /'
+    else
+        say "    !! å®ˆå«è„šæœ¬æ²¡è½åˆ°ä½ï¼Œè·³è¿‡"
+    fi
+
+    step 8 'è‡ªæ£€'
+    boot_ro
+    bad=0
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        p=$(T "$target")
+        if [ -f "$p" ] && [ "$(md5_of "$p")" = "$md5" ]; then
+            say "    âœ” ${target}"
+        else
+            say "    âœ˜ å†…å®¹ä¸ä¸€è‡´ ${target}"; bad=1
+        fi
+    done <<EOF
+$MANIFEST
+EOF
+    fv=$(grep -m1 '^fdtfile=' "$(T "$FNENV")" | cut -d= -f2-)
+    if [ -f "$(T "/boot/dtb/rockchip/${fv#rockchip/}")" ]; then
+        say "    âœ” fdtfile=$fv ç›®æ ‡å­˜åœ¨"
+    else
+        say "    âœ˜ fdtfile=$fv ç›®æ ‡ä¸å­˜åœ¨"; bad=1
+    fi
+    say ""
+    say "  å¤‡ä»½ç›®å½•ï¼š$bkdir"
+    say "  å¸è½½    ï¼šsudo bash $0 --uninstall"
+    got=$(sha256sum "$(T "$DTB_TARGET")" 2>/dev/null | cut -d' ' -f1)
+    if [ -n "$got" ] && [ "$got" = "$DTB_SHA256" ]; then
+        say "  dtb å·²å°±ä½ï¼šsha256 ä¸è®¾å®šå€¼ä¸€è‡´ï¼ˆ$gotï¼‰"
+        say "  ä¸‹æ¬¡å¼€æœºå¿…ç„¶åŠ è½½è¿™ä»½ï¼›æœ¬æ¬¡è‹¥åˆšä»æ—§å†…å®¹æ¢è¿‡æ¥ï¼Œé‡å¯åç”Ÿæ•ˆï¼š reboot"
+    else
+        say "  dtb sha256 ä¸è®¾å®šå€¼ä¸ä¸€è‡´ï¼š${got:-è¯»å–å¤±è´¥}ï¼ˆåº”ä¸º $DTB_SHA256ï¼‰"
+        say "  æ–‡ä»¶å†…å®¹ä¸å¯¹ â†’ /boot åªè¯»æˆ–è¢« immutable æŒ¡ä½ï¼Œçœ‹ä¸Šé¢ âœ˜ é¡¹"
+    fi
+    [ "$bad" -eq 0 ] || { say "âš  æœ‰æ ¸å¯¹ä¸ä¸€è‡´é¡¹ï¼Œè§ä¸Šé¢ âœ˜"; exit 1; }
+}
+
+cmd_uninstall() {
+    need_root '--uninstall'
+    say "== å¸è½½ S2 è‡ªæ„ˆæœ€å°åŒ… v$VERSIONï¼ˆä¸å®‰è£…åŒä¸€ä»½æ¸…å•ï¼‰"
+    step 0 'ç›˜ç‚¹'
+    n=0
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        if [ -e "$(T "$target")" ]; then say "    å­˜åœ¨ $target"; n=$((n+1)); else say "    ç¼ºå¤± $target"; fi
+    done <<EOF
+$MANIFEST
+EOF
+    [ -f "$(T "$SNAPSHOT")" ] && { say "    å­˜åœ¨ $SNAPSHOT"; n=$((n+1)); }
+    say "    å½“å‰ fdtfile: $(grep -m1 '^fdtfile' "$(T "$FNENV")" 2>/dev/null || echo æ— )"
+    [ "$n" -gt 0 ] || { say "    ï¼ˆæ²¡æœ‰æœ¬åŒ…è½ç‚¹ï¼Œå¯èƒ½å·²å¸è¿‡ï¼‰"; }
+
+    st="$(state_path)"
+    orig_fdt=''
+    [ -f "$st" ] && orig_fdt=$(grep -m1 '^FDTFILE_ORIG=' "$st" | cut -d= -f2-)
+    step '0.1' 'çœ‹æœºå™¨ä¸Šè¿˜æœ‰è°åœ¨ç®¡ dtb'
+    detect_rivals; report_rivals
+    if [ -z "$RV" ]; then
+        say ""
+        say "    æœºå™¨ä¸Šæ²¡æœ‰åˆ«çš„è‡ªæ„ˆå±‚åœ¨ç®¡ dtb/fdtfileã€‚"
+        say "    å¸è½½ä¼šæ‹†æ‰æœ¬åŒ…çš„é’©å­ä¸è‡ªæ„ˆï¼Œdtb ä¸ fdtfile ä¿æŒç°çŠ¶ï¼ˆå…¼å®¹ dtb ç•™ç€ï¼Œç…§æ ·èƒ½å¼€æœºï¼‰ï¼Œ"
+        say "    ä½†ä¹‹å OTA å†æ”¹ fnEnv å°±æ²¡äººç®¡äº†ã€‚"
+        say ""
+        say "    âš  è¿™é‡Œè¿˜æœ‰ä¸€å±‚é£é™©ï¼Œåˆ«æ¼çœ‹ï¼š"
+        say "      fdtfile ä»æŒ‡å‘ /boot/dtb/rockchip/$(basename "$DTB_TARGET")ã€‚ä»¥å OTA è‹¥é‡åˆ· /boot/dtbï¼Œ"
+        say "      è¿™ä¸ªæ–‡ä»¶æ²¡äº†ï¼ŒU-Boot æŒ‰ fdtfile åŠ è½½ä¼šå¤±è´¥â€”â€”æ•…éšœåœ¨å¼€æœºé˜¶æ®µï¼Œè®¾å¤‡ç›´æ¥èµ·ä¸æ¥ï¼Œ"
+        say "      ä¸æ˜¯è¿›ç³»ç»Ÿåæ‰å‘ç°ï¼ŒSSH ä¹Ÿè¿›ä¸å»ã€‚"
+        say "      æ‰€ä»¥è®¾å¤‡ä¾§ä¼šç•™ä¸€ä»½å‚è€ƒå‰¯æœ¬ï¼ˆå‡  KBï¼‰ï¼š$GUARD_STATE/dtb.ref"
+        say "      çœŸèµ·ä¸æ¥æ—¶ï¼Œæ•‘æ´/ä¸²å£ä¸‹ä¸€æ¡å‘½ä»¤å›å¡«ï¼š"
+        say "        sudo install -D -m 644 $GUARD_STATE/dtb.ref /boot/dtb/rockchip/$(basename "$DTB_TARGET")"
+        say "      æƒ³è®©æœºå™¨å½»åº•å›åˆ°â€œä¸ä¾èµ–å®šåˆ¶ dtbâ€ï¼Œå†æŠŠ fnEnv çš„ fdtfile æ”¹æˆåŸå‚æ¿å‹ï¼ˆè‡ªè¡Œç¡®è®¤æ¿å‹åï¼‰ã€‚"
+        if [ "$DRYRUN" = 1 ]; then
+            say "    ï¼ˆdry-runï¼šçœŸå®æ‰§è¡Œä¼šåœ¨æ­¤è¯¢é—® y/Nï¼‰"
+        elif [ "$YES" = 1 ]; then
+            say "    --yes å·²ç¡®è®¤ï¼Œç»§ç»­"
+        elif [ -t 0 ]; then
+            printf '    ç»§ç»­å¸è½½ï¼Ÿ[y/N] '
+            read -r ans
+            case "$ans" in y|Y|yes|YES) say "    å·²ç¡®è®¤" ;; *) die "ç”¨æˆ·å–æ¶ˆå¸è½½" ;; esac
+        else
+            die "éäº¤äº’ç¯å¢ƒï¼šç¡®è®¤ç»§ç»­è¯·åŠ  --yesï¼ˆä¾‹å¦‚ sudo bash $0 --uninstall --yesï¼‰"
+        fi
+    else
+        say "    æœ‰å…¶ä»–è‡ªæ„ˆå±‚åœ¨ç®¡ dtbï¼Œå¸è½½åç”±å®ƒä»¬ç»´æŒ"
+    fi
+    if [ "$DRYRUN" = 1 ]; then
+        say ""
+        say "    dry-runï¼šä»¥ä¸‹åŠ¨ä½œä¸ä¼šæ‰§è¡Œ"
+        say "      would stop+disable: $UNITS"
+        say "      would run $GUARD --releaseï¼ˆåˆ  claimã€æ¸… drop-inã€éš”ç¦»é¡¹æ”¾å›ï¼›dtb ä¸åŠ¨ï¼‰"
+        while IFS='|' read -r mode target src md5; do
+            [ -n "${mode:-}" ] || continue
+            case "$target" in
+                /boot/dtb/rockchip/*) [ -e "$(T "$target")" ] && say "      would keep $targetï¼ˆå…¼å®¹ dtbï¼Œä¸è¿˜åŸï¼‰" ;;
+                *) [ -e "$(T "$target")" ] && say "      would remove $targetï¼ˆæœ‰ .orig-bak çš„å…ˆè¿˜åŸï¼‰" ;;
+            esac
+        done <<EOF
+$MANIFEST
+EOF
+        say "      would remove $GUARD_CONF / $SNAPSHOT / $GUARD_STATEï¼ˆä¿ç•™ dtb.refï¼‰"
+        [ -f "$(T "/etc/systemd/system-shutdown/zz-s2-dtb-guard.sh")" ] \
+            && say "      would remove æ—§ç‰ˆå…³æœºé’©å­ zz-s2-dtb-guard.shï¼ˆå·²æ”¶è¿›å¤‡ä»½ tarï¼‰"
+        say "      would keep $FNENV åŸæ ·ï¼ˆfdtfile ä¸æ”¹ï¼‰"
+        return 0
+    fi
+
+    step 1 'æ•´åŒ…å¤‡ä»½ï¼ˆåæ‚”è¯ï¼‰'
+    tgz=$(T "$BKROOT/s2-heal-uninstall-$STAMP.tar.gz")
+    list=''
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        [ -e "$(T "$target")" ] && list="$list $(T "$target")"
+    done <<EOF
+$MANIFEST
+EOF
+    [ -e "$(T "$SNAPSHOT")" ] && list="$list $(T "$SNAPSHOT")"
+    hook=$(T "/etc/systemd/system-shutdown/zz-s2-dtb-guard.sh")
+    [ -e "$hook" ] && list="$list $hook"
+    [ -e "$(T "$FNENV")" ] && list="$list $(T "$FNENV")"
+    [ -e "$(T "$GUARD_CONF")" ] && list="$list $(T "$GUARD_CONF")"
+    [ -e "$(T "$GUARD_STATE")" ] && list="$list $(T "$GUARD_STATE")"
+    # shellcheck disable=SC2086
+    [ -n "$list" ] && { tar -czPf "$tgz" $list || die "å¤‡ä»½å¤±è´¥ï¼Œä¸­æ­¢"; say "    $tgz  $(stat -c%s "$tgz") B"; }
+
+    step 2 'äº¤è¿˜å‹åˆ¶ï¼ˆå…ˆæ”¾å›å¯¹æ–¹çš„é’©å­ï¼Œå†æ‹†è‡ªå·±ï¼‰'
+    if [ -f "$(T "$GUARD")" ]; then
+        bash "$(T "$GUARD")" --release 2>&1 | sed 's/^/    /'
+    else
+        say "    å®ˆå«è„šæœ¬å·²ä¸åœ¨ï¼Œè·³è¿‡ --release"
+    fi
+
+    step 3 'åœç”¨å®ˆæŠ¤'
+    for u in $UNITS; do
+        sys stop "$u"; sys disable "$u"
+        printf '    %-32s enabled=%-10s\n' "$u" "$(u_state "$u")"
+    done
+
+    step 4 'fdtfile ä¸åšæ”¹åŠ¨ï¼ˆæˆ‘ä»¬çš„ DTB å…¼å®¹æ—§ç‰ˆï¼ŒæŠ˜å›æ—§ dtb åè€Œæ”¾å›ä¸€ä»½æœ‰ç¼ºé™·çš„è®¾å¤‡æ ‘ï¼‰'
+    cur=$(grep -m1 '^fdtfile=' "$(T "$FNENV")" 2>/dev/null | cut -d= -f2-)
+    say "    ä¿æŒ fdtfile=$cur"
+    if [ -f "$(T "/boot/dtb/rockchip/${cur#rockchip/}")" ]; then
+        say "    ç›®æ ‡æ–‡ä»¶å­˜åœ¨ï¼Œé‡å¯ç…§æ—§èƒ½èµ·æ¥"
+    else
+        say "    !! ä½† rockchip/${cur#rockchip/} ä¸å­˜åœ¨ï¼ˆä¸æ˜¯æœ¬åŒ…é€ æˆçš„ï¼Œè£…ä¹‹å‰å°±ä¸åœ¨ï¼‰"
+    fi
+
+    step 5 'åˆ æœ¬åŒ…çš„æ–‡ä»¶ï¼ˆ/boot ä¸‹çš„ dtb ä¸€å¾‹ä¿ç•™ï¼Œä¸è¿˜åŸæˆæ—§å­—èŠ‚ï¼‰'
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        p=$(T "$target"); base=$(basename "$p")
+        case "$target" in
+            /boot/dtb/rockchip/*)
+                if [ -e "$p" ]; then
+                    if [ "$(md5_of "$p")" = "$md5" ]; then
+                        say "    ä¿ç•™ $targetï¼ˆæœ¬åŒ…é‚£ä»½å…¼å®¹ dtbï¼Œä¸è¿˜åŸï¼‰"
+                    else
+                        say "    ä¿ç•™ $targetï¼ˆå†…å®¹ä¸æ˜¯æœ¬åŒ…å†™çš„ï¼Œæ›´ä¸åŠ¨ï¼‰"
+                    fi
+                else
+                    say "    å·²ä¸å­˜åœ¨ $target"
+                fi
+                rm -f "${p}.orig-bak" 2>/dev/null && say "    æ¸…æ‰ ${p}.orig-bakï¼ˆæ—§å­—èŠ‚å·²æ”¶è¿›å¤‡ä»½ tarï¼‰"
+                continue ;;
+            /var/lib/s2-dtb-guard/dtb.ref)
+                # è¿™ä»½ç§æœ‰å‰¯æœ¬è¦ç•™ç€ï¼šå¸è½½å /boot çš„ dtb å’Œ fdtfile éƒ½ä¸åŠ¨ï¼Œ
+                # OTA ä¸€æ—¦é‡åˆ· /boot/dtbï¼Œfdtfile å°±æŒ‡å‘ä¸å­˜åœ¨çš„æ–‡ä»¶ï¼Œè®¾å¤‡åœ¨ U-Boot é˜¶æ®µèµ·ä¸æ¥ã€‚
+                if [ -e "$p" ]; then
+                    say "    ä¿ç•™ $targetï¼ˆOTA é‡åˆ· /boot/dtb åå”¯ä¸€çš„è®¾å¤‡ä¾§å›å¡«æºï¼‰"
+                else
+                    say "    å·²ä¸å­˜åœ¨ $target"
+                fi
+                continue ;;
+        esac
+        [ -e "$p" ] || { say "    å·²ä¸å­˜åœ¨ $target"; continue; }
+        if [ -e "${p}.orig-bak" ]; then
+            cp -a "${p}.orig-bak" "$p" && say "    è¿˜åŸ $targetï¼ˆç”¨ .orig-bakï¼‰"
+            rm -f "${p}.orig-bak"
+        elif [ -e "$(T "$OLD_BK")/$base" ]; then
+            cp -a "$(T "$OLD_BK")/$base" "$p" && say "    è¿˜åŸ $targetï¼ˆç”¨ $OLD_BKï¼‰"
+        else
+            rm -f -- "$p" && say "    removed $target"
+        fi
+    done <<EOF
+$MANIFEST
+EOF
+
+    hook=$(T "/etc/systemd/system-shutdown/zz-s2-dtb-guard.sh")
+    if [ -f "$hook" ] && grep -q 's2-dtb-guard.sh --shutdown' "$hook" 2>/dev/null; then
+        rm -f "$hook" && say "    removed ${hook#$R}ï¼ˆæ—§ç‰ˆå…³æœºé’©å­ï¼Œå·²æ”¶è¿›å¤‡ä»½ tarï¼‰"
+    fi
+
+    step 6 'æ¸…å¯ç”¨é“¾æ¥ / é…ç½® / çŠ¶æ€ / å¿«ç…§'
+    for d in "$R/etc/systemd/system" "$R/usr/lib/systemd/system" "$R/lib/systemd/system"; do
+        [ -d "$d" ] || continue
+        for t in multi-user.target timers.target shutdown.target reboot.target halt.target poweroff.target; do
+            [ -d "$d/$t.wants" ] || continue
+            find "$d/$t.wants" -maxdepth 1 -type l \
+                 \( -name 'fix-fnenv*' -o -name 's2-dtb-guard*' -o -name 'scsi-rescan.service' \) 2>/dev/null \
+            | while read -r l; do
+                rm -f -- "$l" && say "    unlink ${l#$R}"
+            done
+        done
+        find "$d" -maxdepth 2 -name '50-s2-dtb-guard.conf' -delete 2>/dev/null || true
+    done
+    rm -f "$(T "$GUARD_CONF")" && say "    removed $GUARD_CONF"
+    rm -f "$(T "$SNAPSHOT")" && say "    removed $SNAPSHOT"
+    # dtb.ref æ•…æ„ç•™ç€ï¼š/boot é‡Œçš„ dtb ä¸ fdtfile éƒ½ä¿æŒç°çŠ¶ï¼Œä¸€æ—¦ OTA é‡åˆ· /boot/dtbï¼Œ
+    # fdtfile å°±æŒ‡å‘ä¸å­˜åœ¨çš„æ–‡ä»¶ï¼Œæ•…éšœå‘ç”Ÿåœ¨ U-Boot é˜¶æ®µï¼ˆè®¾å¤‡èµ·ä¸æ¥ï¼‰ï¼Œè®¾å¤‡ä¾§å¿…é¡»ç•™ä¸€ä»½
+    # å‚è€ƒå‰¯æœ¬ï¼Œå¦åˆ™åªèƒ½é‡æ–°æŠŠ .run ä¼ ä¸Šå»æ‰æœ‰å­—èŠ‚å¯å›å¡«ã€‚å‡  KB çš„ä»£ä»·ï¼Œæ¢ä¸€æ¡è‡ªæ•‘è·¯ã€‚
+    refkeep=''
+    if [ -f "$(T "$GUARD_STATE")/dtb.ref" ]; then
+        refkeep=$(mktemp) && cp -a "$(T "$GUARD_STATE")/dtb.ref" "$refkeep" \
+            || { refkeep=''; say "    !! æš‚å­˜ dtb.ref å¤±è´¥ï¼ŒéšçŠ¶æ€ç›®å½•ä¸€èµ·åˆ ï¼ˆå¤‡ä»½ tar é‡Œè¿˜æœ‰ä¸€ä»½ï¼‰"; }
+    fi
+    rm -rf "$(T "$GUARD_STATE")" && say "    removed $GUARD_STATEï¼ˆå«éš”ç¦»åŒº / å¿«ç…§ / å®‰è£…çŠ¶æ€ï¼‰"
+    if [ -n "$refkeep" ]; then
+        mkdir -p "$(T "$GUARD_STATE")" && cp -a "$refkeep" "$(T "$GUARD_STATE")/dtb.ref" \
+            && chmod 644 "$(T "$GUARD_STATE")/dtb.ref" 2>/dev/null || true
+        rm -f "$refkeep"
+        if [ -f "$(T "$GUARD_STATE")/dtb.ref" ]; then
+            say "    ä¿ç•™ $GUARD_STATE/dtb.ref  $(stat -c%s "$(T "$GUARD_STATE")/dtb.ref") B"
+            say "      èµ·ä¸æ¥æ—¶å›å¡«ï¼š sudo install -D -m 644 $GUARD_STATE/dtb.ref /boot/dtb/rockchip/$(basename "$DTB_TARGET")"
+        fi
+    fi
+    if live; then systemctl daemon-reload >/dev/null 2>&1 || true; systemctl reset-failed >/dev/null 2>&1 || true; fi
+
+    step 7 'æ ¡éªŒ'
+    bad=0
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        p=$(T "$target")
+        case "$target" in
+            /boot/dtb/rockchip/*) continue ;;   # dtb æ˜¯æ•…æ„ä¿ç•™çš„ï¼Œä¸ç®—æ®‹ç•™
+            /var/lib/s2-dtb-guard/dtb.ref) continue ;;   # å›å¡«æºï¼Œæ•…æ„ä¿ç•™
+        esac
+        [ -e "$p" ] && { say "    !! æ®‹ç•™ $target"; bad=1; }
+    done <<EOF
+$MANIFEST
+EOF
+    [ -e "$(T "$GUARD_CONF")" ] && { say "    !! æ®‹ç•™ $GUARD_CONF"; bad=1; }
+    if [ -e "$(T "$GUARD_STATE")" ]; then
+        extra=$(find "$(T "$GUARD_STATE")" -mindepth 1 ! -name dtb.ref 2>/dev/null | head -n 1)
+        if [ -n "$extra" ]; then
+            say "    !! æ®‹ç•™ $GUARD_STATE/${extra##*/}"; bad=1
+        elif [ -f "$(T "$GUARD_STATE")/dtb.ref" ]; then
+            say "    ä¿ç•™ $GUARD_STATE/dtb.refï¼ˆæ•…æ„ç•™ç€ï¼ŒOTA é‡åˆ· /boot/dtb åçš„å›å¡«æºï¼‰"
+        fi
+    fi
+    fv=$(grep -m1 '^fdtfile=' "$(T "$FNENV")" | cut -d= -f2-)
+    if [ -f "$(T "/boot/dtb/rockchip/${fv#rockchip/}")" ]; then
+        say "    fdtfile=$fv  ç›®æ ‡å­˜åœ¨ OKï¼ˆå¼•å¯¼é“¾å®Œæ•´ï¼‰"
+    else
+        say "    !! fdtfile=$fv  ç›®æ ‡ä¸å­˜åœ¨"; bad=1
+    fi
+    say "    ä¿ç•™çš„ dtb:"
+    while IFS='|' read -r mode target src md5; do
+        [ -n "${mode:-}" ] || continue
+        case "$target" in /boot/dtb/rockchip/*) ;; *) continue ;; esac
+        p=$(T "$target")
+        say "      $target  $( [ -f "$p" ] && printf '%s  %s B' "$(md5_of "$p")" "$(stat -c%s "$p")" || echo ç¼ºå¤±)"
+    done <<EOF
+$MANIFEST
+EOF
+    say "    è¿è¡Œæ€ modelï¼ˆé‡å¯å‰è¿˜æ˜¯æ—§çš„ï¼‰: $(model_now)"
+    [ "$bad" -eq 0 ] && say "    âœ… å¸è½½å¹²å‡€ï¼šæœ¬åŒ…é’©å­/è„šæœ¬/é…ç½®å…¨æ‹†ï¼Œdtb æŒ‰ä½ çš„è¦æ±‚ä¿ç•™ï¼ˆå…¼å®¹æ—§ç‰ˆï¼Œä¸è¿˜åŸï¼‰"
+    say "  å›æ»šï¼š tar -xzPf $tgz ; sudo bash $0 --install ; reboot"
+    [ "$bad" -eq 0 ] || exit 1
+}
+
+usage() { awk 'NR>1 && /^#/ {sub(/^# ?/,""); print} NR>1 && !/^#/ {exit}' "$0"; }
+
+DRYRUN=0; YES=0; CMD=''
+for a in "$@"; do
+    case "$a" in
+        --check) cmd_check; exit 0 ;;
+        --status|--verify) cmd_status; exit 0 ;;
+        --dry-run|-n) DRYRUN=1 ;;
+        --yes|-y) YES=1 ;;
+        --install|-i) CMD=install ;;
+        --uninstall|-u|--remove) CMD=uninstall ;;
+        --help|-h) usage; exit 0 ;;
+        --version|-V) echo "S2è‡ªæ„ˆæœ€å°åŒ… v$VERSION  dtb=$DTB_MD5  payload=$PAYLOAD_SHA256"; exit 0 ;;
+        '') ;;
+        *) echo "æœªçŸ¥å‚æ•°ï¼š$a" >&2; usage; exit 2 ;;
+    esac
+done
+
+[ -n "${CMD:-}" ] || CMD=install   # çª—å£é‡Œç‚¹ã€Œè¿è¡Œã€ä¸å¸¦å‚æ•° â†’ ç›´æ¥å®‰è£…
+case "$CMD" in
+    install)   [ "$DRYRUN" = 1 ] && say "(dry-run: ä¸åšå®é™…å†™å…¥)"; cmd_install ;;
+    uninstall) cmd_uninstall ;;
+    *) usage; exit 2 ;;
+esac
+# è„šæœ¬æ­£æ–‡åˆ°æ­¤ç»“æŸï¼šä¸‹é¢è¿™è¡Œå…ˆé€€å‡ºï¼Œåˆ«è®© shell ç»§ç»­è§£æåé¢çš„äºŒè¿›åˆ¶è½½è·
+exit $?
+#__S2_PAYLOAD_BELOW__
+‹     ÿì½	œœÅu ş$\Œ‘@Pkº{FÒY8„‘ƒlÇ<ş¦û›™¶ú¢¿î‘„¤dHè–À¡@Ü ‰Ãè	9N²9wãëÄ96==3Š7±7›İdÿë°ÿ÷êø¾WõÓs@vóË@«¾«^Õ{õêÕ«W¯^ud²¶Ód|¨qø[8>KáOOı×‰ø‚ÄBÃœo|§l•LÓ(
+å¨ï†zÿÿè_kÿÒÊæùZc«2åÕ«ĞUÉÄœä¼t¹}ìÚAKKpû'“‰ùÍÍZû·,\Øb˜ñoÿıïûS?ø;£næ}pÙjÔ]zÒ9ğ»~3øÓOÀól@Ö:‘‡ßòLŞ#ŒqäŞ$÷_„ßÜR!µ2Õ•)Îb?£·Ë]™|gÙNuÍ•7©l¡’ì”¡e&uÁú/¼G¼6ïù¾6¿º|Å//¿é®Û¿¼Ü¼7iŞ\°JióÎ›îeu¶²Ë±™ÿ
+ø-i*fò©r)ÛÔYÌ–v¤ÓkÒonÑ¾±¶ø¾Yîûf¾ï›»|ßøËú²ï›…Ê7Óàw_S&™ÂªzÕpß}“¿³ç[şw¶|×î÷-ù.åWïÒşweùÎVß!O¬irìRÆÊbU=jxï7¸ïíAï·÷Ş?NŞ/x¿¼ox˜¼_ğşUòŞ
+xÿyßğşyŸ
+xÿkä}Z{´ı&§˜Á—	?İÿ“|—ô¿ûcù®ÙÿîÏä» Şù«¦\Û2À?ïšµº\
+¿&è³v	z.f¶~Å÷ÿ¾{ PFÔ¥ŠG“/AòÄß.«ßşox&ï§£¬±J¹¹©B©l¯Yóç»ßN‚ì‰L“Ï&‹²ÌºKHùÀı5E'•Ñ¾i×òşÃè¡ïï†t)¹Ç¶‡Ü´ï×ißïÔ¾? ğ•÷oğº¹÷' Jhº4Á‰<
+:Õı[ É4J“ä¨i2îßM¦Sš4š&ãÿ-Ğd†¨7£K¶9–²R]6©÷…HòPæ=GğÅ¬¿GŞ-C*‘û{´z¦5~:!êÉêP(ce«=kÇÜö¹ëP(Ú%«R¬XÈäËN¬;iò¨Á/aµÄ[…Ö­´aŞ\ù¥§ä³)ğì§ÆÔŞCìwñö8÷¿ãàRZ¿®&ï‡9ó×o‹‚éÂhM,…aîPõBPõ^"o! x7ıÇwkªS¢E©”cEG©6‚+0Úş¬A…1íGO³Ÿ£U!°cåò?RaÌ¸`7ûé0-J†Áèî}X…yåô	™|Gê.NO^z°Æ}Lô™‰¼<öüJxŞI#Öm—œL!Ï®S…´íêéŒSÌZkbN¥İYã”íœ÷j¥Üà¯k†ô"	³#SÊ­²J²?×9©•IS¥œÃç1'—RåÕ¸Esù ïo…´^ÓWê‚ô•b©P.¤
+Ù¥‰ÚÏ'Š¾,á}^ÍÏúí8íGäA¢Vy a}^æOFô×É?ıÊSşùnö›~³Òç›#`\ü7/Ô£%ÆúhM0F${4#`4š­õÑ_ù9ûi0Z#`4›¤ÂÀ¼òGÚ¶+|W¨äÓ.Gç:™\Üª¤3‘Ji¯¿Æ}õö[¿¸\ãÕ|&éĞûÇˆ‡yVZkÜ~ ÃŸ‹]1Eó¿‚¬!ëğ=×Ôï§PÜŠ¹
+húDL¼fï„ãŞuë#¶†*¹î'×d\‡ş9î¬èËÓ„î2Ã­ƒªƒ¸ıŸÇóâš~2Gˆ –·œÉÙ%ïı™~İ­1÷-­(c‚¸F®'“ëzR,îû²ÌÕÅ”ëÌY©D,•y§ÊVcnGfµö^IÚLt¾¶Ô£õ¸JeW¶10m±-—É(mõyÃSjëVgòÉ–\måÔåÈû‰X–—Â¦rèRVsreme]O–EóÂ7ãë…}oüei»ÃªdË¡¸:%+¤¸§û"Œ¹¹ğ5¾TÚ[è¹3~nøçE²¿ÎË;¾Áq²üu†[¾7OWÇŸ®ËÂæc'Dİ~æXekiGªE“E³ƒìoéU©˜Õ}ÂÉ¹îç_,u+oxc8›3£|: Òƒ"}Æã½ñX£˜³²™nÛ(­.Úı@öó6Ò°íæ9!icøøV¬ØµFå©ñ·’ï0ïWÄ˜8=DŞ‰~6>­Ñ¬uLiÖI³C"=,ÒçG@³oĞìòŠf§H–ŠköªO‡Ğ¬Ù¥Ws ­¾+ ,ÄóU‚'¥áK"}Y¤/Šo>4,Ùm ÷§âí|š]·W–z8_×UpÊ¤şĞ—Æ?Z)ç2m«2i[Ë}4Âg;DÙ{öDĞpŠh§	;ïoœ#Ğ4ÉÚ
+.š½F“mö&ÇŸĞ?úÿ‹Iÿ×BèÿªH_é+c@IŸ«Dÿ¯•>#m·'kh7FoĞ©íR©R,Ã4%_.²Y» ËÙÉR†wfR±nÖ¦Kë¥êjÊ¿Ü&î'ùh_'æ.D7ÿ.á‡ß!öÄéÏ¼›ÜûP|#aüŒ\7Ô¸~ƒÉÚ¸ƒõ«Ë9"®EYÓ8=b™²À·JûË£u†²'L˜'=@Ç@Ş7Zõ¾Áô½N;o— .v—¢zu‘r{B`_x8¤/œéû"=CÚ	ùùãäùØˆâ5Qÿ–¨úÂêÿhdıùëß:"úo¬ÿÆúŸéwCêõêŸı·GÖÓGQg]P°â´/~"hlÀÁ3øq9$ š..ayéŒƒˆt`™©$-³1¨L˜ìu–:d©b6™ëHÒó{Š¼¤}ş>&—±t!geò\¹.¤Ì|Û]È–­N[äQçÑúX²æ*A7y?[»Ç¶ù$¹¿ÒO‘û/‰1YŞ·	jÊûœö~-‘»]çSºzôùMŸiâŸ)Ú1Bu–Gıå- åÒ4¢Õ:ş‡Ğ6œé/·•–;+şğñÊüm]d™Çüe.›2'´Ìãş2-ZæÌ 2Qßñ©•ù»²Ì½Ì·Êl›2{ÂÊ|Çµã^ÕÒš®tEH?M•*e~?ˆ¶ºÍtÂ– İ !ªNÚºùeAuRëóGm=YØ7„b|cˆM$¬Î0&LxJÔù1L÷uŞx2á%¤ıç6m§öZĞ÷&ôŠo'ø$ÚšÒäW¯õ¹¸>5>:À·ŠNó¢Eì™6â£ç©ö:F³±F€iŒÌ_~QL4[Ï¬h[O¨=>ĞZ²;+Y«\(-M¤t;[9åà¯e~r¾n¿§cÁ_«sê	¿èNÃ¼Ç[GÅb'“k"÷/HS(ì–«knX òä¾Òkµ6½@Á#æ”­2HdnD’enPm²™ÔÒ¤ª«“öm/2t|MÍÿë:_Ö¾ãUŞSx=¤X[Î&uÜOğì¼(ïK»ÿcíş¯µûŸj÷ÿ¤Ş_8^»Ÿ®İ_Mîq)k¶Bc®sÔİzË­·´İ³ìs	e>ÊÛ?[€™bC	ãç«ó¯ï`k”G&6¹l_Qå‘+Ôxâ/‡Ë—¤2‡æ¸tÖÄË
+_)Í:©T[:]C”{¡TnK ıòÿzôûÉHé7?€~‰îÖÚdÚÕ«–*õTîY½>=Üzİqë]¤«I¿4F_+Ş½¨-“õ^+ ¸^Gë¡Ü³z|u„õH’z\$ëÑ1jêóP7µm—‹û‘Ô¥Y·<šµ·¡.Œÿ%¯®yôºµ¨óhÆG™B›å.4*õH~]­‡rÏÚë“#¤Ñ|_{±z8éšÛKçiİ>5Âº-0;"«[sws]®ÛĞtûÄ°Û“ÃĞëº0€–c$­¾~ uƒªÕŞ‚ë6<ºñ<zİùä–¨›&·FK»_.íîıêò·ÜîŠVEŞ7sCöõbåš#/7©êNœ÷tM4aec˜e+~5.ê¡vŠU*Ëõ”˜Ulçæ¬ÿÙĞ×Šé<¨2’é\ÏÏj|c»UIã4ŠkÓæC÷Â}ÂÖfˆ´NÓ¯¯ÖÁ/|Võ¼ğu¢ƒ„ÚüŠ«rH°…µÌá[uî˜äÏ|4ûSƒNuÚLiœÎNÈñ†!ğşYC©ÏÄXâ9cñœ;¶x&ÇOsñŒ-Íc‰g|ñœ7&xVÙ¥XÎÊÃĞ’³óeDz‘jï
+³•×f×ı¡bçåyö5‚×5å„8~7`Y˜=G—yõà&ş¥}6Œ‰Zû\"Ö›/Q×¹.D+V“V¶¢ŒV_“Êø}‘şGo,`e`sà ›¬©,¿Mæ¢€õ¤?é_ˆô/µ2q@G|~Me&âz™õøı7‘şƒWVêµÙ~CÃÀÚß¿Åµ•›ĞË¬íÙÁòşNk³ÏÔ»ÙğÃª›¨•7Uƒ½¤6Ø>?ßieÓÚä³ğû%uo@T>[äô Úüª·&ÄÊ@ï€›q/#üpÕ}üĞásğ»½¦røøïÂ ş›-ÒkEzFÇå!e¹úXg±âÊÖ÷ûÊ+ô”2ĞÉ /bí™’ëT¢Ê«~ÅÑE¬õ¸úØb×l$×³‰n„mõß*´9‘Ä6ƒì!«8_Mdx#~Û^qÂöÈÈı0Ÿğ[™½FyáO…}ŒÊÁge]º3i»À\ëÑÎo[¸+Âb½£»°Şñ·uTÑuÙm„F ºÓÒ%Ø''ş^¤?#¾;ƒ]î`(qC{í4qi)@KpÌZÉŞ†àõüÖÍÙ-ñ“'¸N¢Œ¢ãº•à:Ù­{¦ÃJÙ5á«ã!qı@Ss¶årcÈujÖæw¸öÊN)Ò^‹^ß*úM²•?óÑä§î\¦'€&_ñkøï"ıG‘şo­¶¹#^ä—şYu×‰t–H¯õlH'§
+%Û°VCßïj7‚}¾ê}|b!Ÿü}$ŸüRÀüîán‡éCğG8ŸØÃâ“Jšğ­¼>Âx°a,çt¥|¼"Ÿë´ùÀğÉZJ›4¡Ihók"ıhï"İ%¾ı$›g*FŠÿbé:Éâ•c¡ªªâ;ñ
+Õ_zbÃ¤ŸÿaO€àO½ı}'—lÇ.Cû¼ogğ—ÈY)i7€ËXË¼dÜ
+§>¨óùK\Ihg’±é“„—!/ ÜLéAªÖ¶ÊZi·áx7Ñ=6‰t‹š¿%Ò_éohï[¤oˆôu;Ïü–Ë9(Š6 AOÏ¶Òj÷²¼ÚÀoKvG¡R6,qÏæ@ìB~àm t±\ÄOùkæ§$/Úl[óñ”íø_½1eâd¯>ŠO¶>1.âSÑD¢MDÿ;É=¶ÿ]äÛU<R—Kg
+†¶g„4¿|=Ôü†Û§.1v8aêÈtzp?õè	ˆ×1CÖÄ®3q«º>;q¿¶'ö„ GVÇ¬ØÛQŠtó¾àk´ªc™âŠNWW†õİ Xw…ÀâzM¡ˆİN÷[pıl?=DLË?˜°T÷I |â ÑimcÙJÙôÙÛCh4‡Èª¿éé_‹ôG"ı‘çZu¬C3^[w1./ò"iøuŸ»Æ‚‹Bx9Hæëw…"áIæo¢×_¾ë%ş3—Hƒb¡$Üx‡57¿Hæ%{^&xCî£´ói¶¹qiÒ—ŸèÑ±ş_ÒÊşšâ÷€uHø`ÔÕÚYşÈ:Dæ§é$ÀÅÍ6ÑI>®“ñùg•Áâƒ	¿esŞ¢“P^ÒItı#ˆ/£t»İı½†‰ëó»ëçw™b&\›»û `ì¼Ğ7vRüoUç)ã5û;’ïnLû÷Ğàüèş9q²Ul§êf„ôáÀqdı-ªÅû
+oŠöY8æí31²}–£}Î×Ğ>÷°}.ş¿½}p¯06ßéÊİ?÷·E½oßm‹XÈ¸×/ÒA«o‹1b±=Ê=;œ›eœ’‘Â ^ Î)²C·mOöïğû2ü¾İ~úº•O·ûùĞs¢IuÂÿCŞ_,ÖO©Üš<†íìcšô#1NÑr¿Tã¸óëÌ?
+Œ+PF}ª™mzJ€oı¼Ôú]}¾GçuHK"}PğÎoÌßˆpöbÆ[äTöxÑşùŞ³‰“!_›ør¨ı¸u2Ğ¿'‘ñ{œF«I$ö…V!ÌıJŞIªŸã¤kÈú…7ÑûÓK-Ã§ŞPbL°<Ò:dmk¥Õi/MX¾¼'r¢.[èô¾m÷}{u€¾ı#™7OËIùò~" o±ÛzyÓ¾¼Ÿ¤u„i^*Ó‘IYe jŒ¯ÀÇò•\»]Ë6JŞ‰46Ÿ×¾ÑqÊ±îœ»j¢Â»(>ªºô/”ìX±»œ[šj»ëøç¯<ÂœUZC”5Lç/€õ•q¤m†q(0ËÒ–¤ïfb§—yûiÿ°à@ÿO$[ÕşuPÿ‡oC÷|p‰;5µòš´²š[ã­£+ëÒ²>ë++1J¼.İ†×/ùË-^ÂğZª•Õ2êöº,´½âş²ZG[V^	_Y£m¯ËBÛ+©•¥Çœ~Y—ae}F/kÔíuyh{-ğ•5Z^JÃ…ş²ZG[Vo´úÊJ¯‡ÃğZä/k´x=†×¾²šG‹×#ax-ÖÊj5Ï_ÊóËµ²º¬«BËºÉWÖhÛëªqaíµÌWÖhÛëªñaxİæ/k´xÃës¾²ZF‹×„0¼n×Ëµ<¼*T.ÑÊ²F]ÖÇCËjö—Õ:Ú²ÂÚ«ÅWÖhåüÇCå¼»&İæ†ds¼†ù!|ë/c¦A7Æë¶†ÉªŞ=é:±¿›Ï{S_ Ú:.ô)ƒoÕµLîÓó]5Æ‰ñÁujT\ÙäõÄ¤ÛÙtÔ «ãù¸îÖıd=îóäz9¹¾\àz®ÙA»Å\ÊÈ9FÖî´Rk»T¢s‚IroÇô {Ì‘>,ÒGDú¨H7z¾.Ü¦Û–sÄê›“íæˆ&›q[•Õtı¿‹©Œ¡Å!q­&-ÑÖœ¤¯Ê7áİİÚ;ÌwÀ:Õ8ñ¼N{>^<§=Ÿ “¹õ¤oh6‚:ß™ô+êÜlÒrxùğïétDÛÃ(ã,ÿèñ7"ßiq–‚bÏ¬À˜+Ñœ¡¦,z|gªiİÜEGÉÂãÿ=]=ìÙ½&NÆıëë,ãàx/AvNÑg'ëÛÓd»r…ÈÑËã%Cmãò‹.'n°=Ü¯È‰ø\M>)ñ¾uşŠ¢ƒ³Ë]Ks}q@à]"n§æ¶&’ó‡QòÚiòìÑâŠ-Î~}ı2nˆôËhñË8.Ò·„ım«H·}È~á—£lÒï‘ë?&ıøÏ%–Ò¤>rı?½ë‹ˆèE—ˆ}%òşS†ß#È~=CØ¯Û¸4,ASÚ®©¥]çF¶k*¤]ßé;¢=·‹tÇ‡Ü®?‰¿?² 90®“K'§#e­;Å#éc‡¬‹®i7İ‹ÃFN(¦K^øı÷S<ŠŸÿh…¨5T0$"××.Uñt×ş×Št=ÙûõÆ– 1>©Î±N¤‰tMœ«½ĞO_ÑW¯…ö$áT#×fş\óWi ñ.”7ëkè—iÑÖ¸Õ©õsSëçŸvm·ùN¶6Òµš*­)–İÉ|mø¼,óA<ÙJU|ïEZ0HlHæJ…àºÜ« ±?AW½Ï‰8 8—h‰×Â{ğm¬œöïù`©¡ûØPŞk	á½%"½‰òŞmğ ¿ ŸÒ_é-"]äÍÆ7æ„¯YN¸ŸuùÖÙ^¹.ò~İ^^MÛÇ¥ãİ"ıõ++¯åŒşéWVÃÚ#Ó_¦hmUÜÙóCÚ`™H—×ØŸéDzã0Ú`iƒñ"çñæE·CÑ¾ö¸G¤÷³=‚dB\Èœà|~XÇ¬è;yÑïŠb­²$Ö0Ë!í*ÓE›&GÕ¦7G¶éC‰ë¶é	-^
+iÇ»´tñÛq‚H/ íYK«ƒç&+èÜ¤ì6]Ím'åyEŒÍ«ÄX=’¶iUÛÜÙ6CüâïéWEú™ÒıB‘NŒ ;í?_éWF)ÏÂ÷¦sHÓ–ZìDÅ zŞIÏ;Bô´¯‹ôkTOø,Ş,¦ãÀEt(­Vö!Ôİæ!¡Û¬ºÍ¯Dğ&åó_¦c.ÔC£qm4uŠéLRU='.ĞO}¤kÜI×B×zÉƒÚ~Jï6‘Ş@Ïºq5*şÓ¯—&éœ¥Dr³ç7Ó}û¬³ØşÙææ8ÛV,Î™²³Y?mîõÍ¨¿ı4b“˜ªÎ!/º'`_ßTºÇ7`¿>ê—™ ;Fc8nóGÛ—#q›Ap›ş!âÖeĞxsÊ±„£7÷Á×#y»)XfÔİ.ÒÏµÅ›ë1Fo.bÒbzÜIx=>/Òå5ÒcÃ‡HÔ˜ÒãşHz$Bèq‡H¿P#=şé‘Sz<Id=îék¤Ç#"=ì1¥Ç7"éÑB17¬»«Fz<jŒe¼Êrjé|ÏÇ¨¹]VaMen×š\ëüÍ†ÏOôKFtìÆ«ìFbc÷OPf&ÕÖœ\Y¨”£¦q}£¡ÆNtmÜ«¬rª+]@ÃÊ-.¬Ô–«Ò^È¼öµá7¨}O†´áÇDz9Õ}ÊLit‘Ø$já;øVá»ø‚ì™¯ÎV$ßu†ÔYÌë¾DôûF€¯‡Òc]&ÒË‡˜£…ùdãÁÇà·y´}ØdíĞ²=’–]!´\!Ò{‡IË‰ôŠÒr‹ØG¾mŒhÙ<¦´LEÒ2BË¯ˆôËÃ¤å•"½j„´Ä5œoí#Z¶Œ)-Ó‘´üV-Y¤_&-?.Ò«GHKÜg½~š–ş#½GOí;RÆWBhùi‘~Â~<µq"¯kOB<µ€cÎGO³Hšu‡Ğl¦HÍĞl‚H/ĞhöíQĞ,øœÿ±ï£§Wg$½V…Ğk6‰S1\z](Ò‰½ö|¸<Ö:v4ëŠ¤Ùêšİ Ò9# Ù$‘^¤ÑìÉ—f‹Æf™Hš­	¡Y“HG²^¤“5š=õáÒÌ;š}+’f…Ğ¬Y¤ñĞlŠH§j4ÛûáÒ¬}ìh¶2’fkCh¶P¤-# Ù4‘N×höô‡K³ÔØÑ,I³u!4[,ÒÖĞl†H/Öh¶ïÃ¥Yzìh–‹¤Ùúš‰µüºÏŒ€f—ˆôRfû?ša¨Ÿœ•=TÈÛb0Û)SûwYø™È{˜çôêtöƒ’XåR¦HàµYY»TVö_ô
+¨ÿLîßUáûÄ6?®h9zei6÷ƒdß(‡›ĞáŞ1©F¸.œT)£í1F8¿Öç"„ƒy2)+«ÅÀ¨K
+Y<±<gIup­Ã|Ñ9‹X³¿cMı?âå¹N®gëqv"ö»®ìµÔc†µ÷e5´wŞŞ^Évº
+Ù´1â6÷êf•:…SÏHÚ˜òÎ3î¿R›?£¶‹ñ¬ÖJÛ”+–á…‰¡×HÙ·A2ìÁHæûÎ°X4fó©ß±Ô¨?úÍ ™w±H§$¯“"ñôXxÂÏ¿Nøù×ıiøZıERşJÏ6ìÉA'kÛE¿mú9’#="÷ÿHæÿ!~Lõõª şš ?§îøc•Dc)gÎ´³°o}f|ñ8 K‘mø@È8t©H/Qì-¼İŞBãÈ5ÁÉ,Şû>&BŠ¸´øLô»Søë{ñ©íöXÆUÿ oPC”¿ğŸ¨ûšQ[|êç±ŠÃÍğLŒ%3ÆÏÆÏäXâi!GÆÏæ±Ä3>†x¾8<#|6ëtœ;Æ´¯"ûê"½¿Fœ_Î‰±ÄqÆâøòØá˜KÍ1Äñ•1ì£cÚG‘}t¸x¾:vx.Œi¿,FöËoŠ´­F<_[<c‰çŒ1Äóõ±Å39–xšcˆçc‹góXâC<ß<»Ö ­úºõ§ƒğÌ[y¦Œ©B®]î°Uñ{Ä§ó_IÎ^iø­7Ô3¦"‘vmì$roõ£¿àüMĞ<à·ˆÿêd5Y=ê(GÉ=Î‰‘û‡‡ŒÿÕ ŸÊK5Z¶Œ	-¤¥8Ï¡îWFHËkk åï“–ÇÇ€–—k´Ôã^^DË”“‰iq'=:>æÛ‡Gıh×á1.%A´9mÇ®¬%N%·±ĞœËùŠ­$Çt}8^$ùÀo·uyè
+ËCø'Vgï{ÖeßHƒ£¤Á¦Ñ@œ7T·vŒhp¦FÜ+i ÎyG
+XµìßûñßÊçÄ6ÏÎB‡üÔ¶u1úâ€¯âm-­ñœkÀµÛ<¦Úìëwˆ½èA¾ŠQ{í·º®‚Sa0Íğ>f§yFì™¦0¯2Üšìpà28£öLÒ>í£jŸm‘ísyíí“ˆjŸÍíóNí3ÚöxW£ãÕcÔ§íQÌäSåR6²´oì²n\ê[5.$&Z¾Ãmò™å¦ÅÃ¹T©~k·ò+ı2ë_~i#½Æ>—rH§xõ«Åû®ş¤¨ŸA65Kšÿ††×»Z=næuŞúâj/l!®”#qm±§Dš®Ws¸*¸Í)n•HÜf†àf‹´£Ü–²]Çu¤<ûAw$®³BpíiW¸~s”¸ş½ëÂ‘âº*×kCpÍˆô[5àÚ3J\æÅÈé ![Éfc•¢‡¥şûZ“ş<ùBŞVòü•–ç½à<±t©;–µ»íl,–¿şoôüÓCÂKFÂÓépjHxÍ‘ğôøĞgƒèêÃ6Æø^rx:¾'Bğurå@<ñúi0z%rú;¿¯¤3aÀÏÚËd€dqŸH$½ó`êRV\ç¥Ä®sq’²¯d²ŒY%c.¼'î'“{Z×ÿ¤¬][ùŸ_Ghú\÷'÷şhğ“~2ş2¿'î§†Àÿ¾Ÿïæ×Ù•ÍÉ•¢,v+TÊq"‹\ZM
+¡ÍÅ
+l~Ü?«=å]§‹é"i?;—“»Øu¬½âxê=„†SDzB¤SµûiÚıtí~†v±v‰v)¹§x¦iİc¾9[ßËCòÛjş\:$ÿe!ù;”üi«l9åR¡İ‚ñ1‘êmÕIÛÊ.wÅiƒû½ïÈZN½äµË•n¬?·ü+Iùu†g^Ş_¥İ\»¿‚ğŞ"Ÿ”¢Gå¬T\úÔàu,—Éä½ßŒ#639®\ÂÛ¿­À•V#Ÿ&=œãæ4RÇq‚i3BÊø]µŒrT“Er¼™¢İO¡ÓïhxtebÄ—Òæ­Ş²ßŸÖ`ş^Lr¶éRs¼s‚v/Ï6xL$÷´Ìß'¼Ša¡X`„œhÉ¬ËDzRƒóu¾I>ï$2L±Ä5Hã”
+è»4¾¦å}E…sRÙÀüW„ä_¡çO[ù¯ÉÿeŠo&™rÇG¼­îA¸ôñQĞ+îëÉ=…?KƒŸ ğğ'kğ§„ÀïÑà'	|e	:ü©üi!ğ7hğ›	üæøuä×KÆû økğ[ü–ø4úLˆ ÿ#üùşüøÂ_‰ÁíõæÊ½„ÿ¨
+ß!íë ş“-¥Vj±f\]Â“Y
+OÀ(‡À¸ ÆJ V	!0¾ #¬ãC`dtéL<(ÿäü9şDPşú1$ïÏŸÊQHş‚?sPş0°èË_Äbşúó'ÂÊÊ_òçÅ?(¿ãÏßFÿ üe­ùä$#x{Ñ7u˜İ^_#:¬£¢ÃHgó_’•/!0ÿe!ùWktiVb88E÷ú[e«“¾Ë¦¤[§X«IycrŒÏ›—Îñ¾9¾ZÑcÅ³¤òŒÇœÂt-¾‘"»‚æSk?*s‚ò?¤æ—â"P^õ·µ¾üÁå×‡”¿Î—?i„õ— üë}ù›°ş”ÿW›z.ãÎñ:¦_Fõ¹ñ!úÜl^…úQ¸º^ksi
+{zß À^•Kx‰x3BàÍÕà%	¼d¼‹CàÅ4xÍ^³6G£ğÂdÆ<^×/L=¯Á›OàÍ€&S^Ğà- ğDÀ“qG4x	¼…ğÂæØ/jğZ	¼Öök¶LÏÑá½¤Á[Dà-Š€WïeŸã„Ÿi	€95æ+:Ì™ˆ†9-æ«:Ì$™Œ†9=Dn¾¦Ãl&0›£a†Íß_×a¶˜-Ñ0Ãxüæ|s~4Ì0>“Â,ÙrĞ{1Ê–²7îãÚ}B»OÒûTÉ»†1AÌ0Å5šZt» Öñ“šííSÚı§Éı82¿ÒmcmjÙ1º~Mõ”q!ù¿©çÏ¥ó×…ä·´üi²ÿŠÊ9ÑÇ¯vZ?#a¨ôLÒø$nlG~C«Q¨ş1!€~U)¯˜qÇH¼ÖdJ\›OS{ùåÚı´>²™–…
+“•©Aù7ùò'BÇŒ üiø&¾‰|Çiötiã¯Ùø‚è»–‚¯´	åßâËŸÌÿ±ıj«†o’à›ŒÀ÷bR9¯ ÷—†Ôw'-+ßËBòo÷åO„ÎS‚òïĞğm&ø6‡à;Ø?äúÉ$í¾>¤¼ÇiY!øNó‡ ü»|ùù'†äßíÛó(÷ãuÌéª”¥Î`½¥.¤<§ÀsMªù€ü‡¿%Kn_×P·ÑI_ä“DÏ #¯×á'üDš1}6m9:IìæãÊxB/#IÊH†—aÛ«ÄãªYÿm½ŒfRFsxud|>IÆ¢ <öèe´2Z¢Ë˜ •qaHOêeÌ'eÌn:ÒÆô¼e½Œ§ô22D—1^+cBH{õ2’2F—qVÆ…!e<­—ÑJÊh.ãcï^RÆ>½ŒE¤ŒEÑeLÔğ˜RÆ~ZFw¡hĞq9ÖåĞû„vŸÔî›é=®Á€“æşÍúóôÖe¼è–òZštyuuˆÍ`£ægÉ`u§Ró»ãèFcîˆvğºÒ…!2ğO\ÚxpĞıĞ‘¥„Àùîø§e¼ ¦‹ãƒXIJé {`Ü¿Uôy£3Æ¥!0~ªÌ¢ëqYŒÿê‡ZËC`ü;?*¬²KáõcLŒŸûat†Á¸8ÆÓc¬.¦œ_M±Sn_YcnGf5”ã¾’¾±¯-õ|Ä¸Ï-Ó†Ûr™õMu}i]:.í`±o¨¯Ùl#øÌ ˜Õ•ÊÈx.âÎçöe››ïìy¾Ä^‘>móiØ|²˜³²T¢´ºPhôş†¡œYÁÎÔ»‚ŒìL=„¥©‡şh·êy|ú{áqoØù—K;Ò)%^Ü¬`_Ş";Ï/ÖYê gª~´¿å£“ä?4|gàöüV¶ªùÕ²²nö•5Úó@¯ª3BÊºÅWÖhÏb¾j\XY·úÛ­½•´ÛµFÈùŸÍçk»ßëÑıâe¹ïk{ôXä,7hÈvÂ…Á~ètÕu"•1WîY¡l_	;ÁÓyC‰B÷„¼¾jò'a>ğ grŒè™”>ß5´sYÿ\Ö¡ÎŸ”gÎ¶ ıü±Í"İ"Rq!›_"æ•cqæ)=çõáÅÎ~\?K®Ÿ!×áó:ç«3üãÄó óUÏÁç«3üç«ßÒšÎWo(ç«2ù OCÏW Æ‚ïÃ?[Õ;ëw)ñ^Çş7[Áşƒ"¶ıç²şÃ5¥ç²şƒ©¦Aç²jÅu–0=/æ-#üÌÖ ~JÏc5Ôş5§¿fÔv>«æóyVkÔù¬Ïø Ÿ3†:Ÿu†ô7ŒóY] Éù¬Rîµ~xrŸ5È½]"İ-ÒÇEú„H¿ı!È½I›!×/ëçÉõá¹÷½¹÷½¹÷½¹÷½ ¹7N“{“4¹7)Zî™Bî™¾ÜëÑäŞUîı|¹÷ójJåŞÏM5’{=#—{¿6B¹÷ëbíè_[î= ÷¾§ù\Û¥¼]F¹a©r#0î&Îÿä<M!-ó’q+H·¼Ş·¿“ït5©÷•¤_^†ıàfJPµ¶UÖJ»oÄûÛÉ¾"on£š2»Ê%bÿå%bo}J¤2.†Åæ‡åE´‰îäeyµÁDÜ‚z‹§ŒXâ	,v!?pŠ6ÌîŠåb›ÜjÍfËZ_‘üõ§9ïÎ«ƒ±Ws"6Ñox|2q)y‡goü&¹Çyæ ß®b?6¸‘ĞY¾ëÏõÏ ±Y	Í ø`òí@¬bE‰ı8}e\
+ĞÕ&“yj«ôÑãw\&b|ü¶ğÿ]áïıûÏOÎ½ÜPÎoŸ¼†|³‹?»ñiè¢w“:1¼³ñşM1ÎÕåÒ™‚Jc.aùz¨3	Ü~†rsiB—Òw±ŒmÛ­ñä¼æX*™Tæ€5¹\/üÆ#b°şş[\æ¤€ñ>°®ğ­¨bXÙ“ßS÷UO>“µòD.NşÍ•n8Gá?0“~˜ã4˜ã†SÑ}xß‰Y«31"ÎY^˜SNì	‡gõ5Ù_¶ªãæÄıê{FÏßp}VÇ¬ØÛQŠtó¾ {“Ù(0S\Á£®ë»°şC,¹gÏ£ZXÃıîd¾îHûeøW}v$:¶Ô…ì÷¼I¤KrvÆN&'´ó?ëÄùŸu+<ù4q2;Ÿ[F­úL§ÿ4”MĞ¤uT4ùåHšŒ¡‰8ºîæaĞDœÁZ÷•QĞäj¤É¢QÑäk‘4Bq¶sİ­Ã É×ïš‘ÒäûFm1 ’c·èaßijS“gÀÈsë‡·èÓÆĞq‹~Ó^Ü¢?4F·è
+—¿º
+Y³‚úLşcç=yc‚ˆç[	íq?QLµâ|b®|·Så‚7G‡1-é‹æÅÔ¨³óébAõÛEüav`ü‘V×¯ë²³;Æ…²T¬dwV²-ÿîã[91<~šğÈ‹qIRªğ“É5i³Æ_ úÛËÕ{V¿?&kxÍİÍ1˜¶j5ºn“YİXş6œöÖV·ä×)uSï»Eİh]çhë£©+äF]#éX×k5º²i­VÙ¡ê:…ĞUšTj¡¢ù×dÎø®Ğ]?¡ÍÿÁ?UÇãZ_XãÍÅÒó‡BóÿPW¶®=Lºkô›\ô»°Æ1àOÈœ†àİ†u+Üÿ³†ûÛ!kñÃm«0Ü/¨÷xrUÁêb£Äñ]uKÌyï^4lYİ8Œ6£FœÚ«ö9õ¾›Ê(RÇDwë¨ë0j¬ãÕ«Tºª÷J¥¾’´lçb¹B>#ªè×Ó‚¿™2>àLğõè’•ÃUÍ”jBŞ™›Ëe
+1ü híò÷¥®s|¨y&±©²XR†—Ÿå­+­ìNÛ)VÒÒ¸Â×ÒN~\Ÿçş5ÃsE Y©;ØÎ^Ú¥îLJ³O¹J]?š’$÷Q1¹şÔÓŠ mÅ[(íÔvê†Æ ì
+i»ëNúéø·ˆé×§OoS}.ü‹LéÁ6°DÓ±YìLæÕCØß»y“.r o\¤W{ï&NîÎ¤íB›eğ´‹ĞâÂ‚ô ›09ÛkÊÄî…÷_ÓÚàÁ+ï+ÛJRY9jšªŸwZÉ ıiä\åë„¶Ô·ä¿‹ôEú?¼5wAO(/dh¯Âí[E»3¨¥•øŸÔæİ1üĞc¢D /ÁßQ|ôÙày™ñ¿Eú‹ağ‚ŞÀ?sEÿüÙ¼R§ñJİpiœ)ärNã–VÆÁguã·^4cvØgÿn]fĞi½„Ğºû,kç¶\®âµÛdIg#Óa¥lÃ¨¡m‚pF:~0Ä:…”[æÊ-›Ë-[•ù~¹eçÃåÖßGòÛÒ~û‘~0ü6ÏğÎ#¬•ß~8¿ÓømÜ°ùÍ."iõ³f(´…iú3ƒºfê4m‘WÿS¤ÿ$Ò6È™>ŒÇ¨†v¦ôñ™#ÒFoş>qrÉ)5ñß.ö¯-çÂèzF×´vùóšúpG¼5>V}øg“t[M­ù¸keÖyšÒ?ªoë}µ¢ı÷Ï½1±z&¤£…‰WúÆ·ÿ&üøÿcdÿİ¤w ¸ _Ì:Á+uD*Ûöš¨¾—Ì–§¬§Nyñâwş’-İŠTçUyf‹Hç{k+ş¾ÏS·}Ík¼V_¶®…å’²%ş…·Î5¥—Ó_Ñc‚x~¼ÆóãÚ}Zt»OA{Ş_ªí+€F[FE^õ)1æŠvÉ*ãÉfÌæ¾GŸ]ôåÿ+R^C±»LcéÎ‚òşw‰ÛM‘^cÔ¥V³NR—ZcÔm:¤ÊÄ)?%«+–\´P÷F=¾OkSäéŸªóµ)¿Pï§N5¦~œ?7õSâ~œ,«%-ëŠ?}ÔPÊšö+?WÊRî¡¬iŸ¼]-«WÙS$et¹QÊ ÓëƒÓê® ÷K5½‚®£ï ëè;Õ±àÂ¿à¼"*nx×‰ y¥ô×(y…¦é&rıùäØ´äØ_~Q€Dm•.¼ø]‹OIÕ—Ó×|DßGeÜ×é2×â s~ÇÈfò+@?ñû†˜ƒß¨ºI"½H¤õ"•ïeÌÄ‡”V»E¤$^tÙİ)ñœö{Ufâoæ¯ßFŞOM_±-Ë€)şÈ{äõuÆ§DpqeíÍÚzÖ­ÚZÎm½]™:i¼Qş¾$ë¡Õ¥5B†3¬‰<¯Šè¼HÎKú”£T¦ÿ—!ä÷M~“û©Ï„(sêñ>?î©ßKòş‡d¿aPÿz.é#’õ“„¬ÿ‘÷SQŞgmk¥ÕišÜù1õç¢öÒ¯íKBG¯ó¾	ØxP÷#“ÿaò¼uÔ:%‘7“TyşÏ“–FÌï'<5YÈphsw¢¨Ëm*[¢ävH¨yø_/Öjİú™.{J+12y*%ùôÎ>ƒ¸²ûh²—Ğd
+ÒÀ0Ÿ0âf
+šŒ#ûÍfŠTÌaŒFº_ÁIå2èÛe0‡SwB¤¯±^¢ú^Mx‰È&2ïd1y0ëÙ¢&NvøDÉá3¥À¶ ¶F6gıMı8ºm¦a[ş„´.j‘@Ói7¦<õ
+ët¥}BfTá×¿øÉs„¿ê“!¹öŒSuç2yë’Éw§h§2™T oãË¿mùJ®İ.%;g•V¢Û\J{Cdà4²æ5m±1ıf"#¦}Ñ0.İLî;ÔùÃ4¢lø|Åƒe×½ÆõÚ{(tÜqDÇ"Ód¹O©²‰õ›¿qe^ \šö*·é°³ƒY5ù§ß#8€¬šòÏw³Çİ•wÍÃ„Käk$Ü–aÂ%²5î‚aÂ%ı-îÂaÂm<5[…‹ãş<ŞšÂÇ› ç0î¨õÏ?ü|Úé°z·³ŞMÇ&©õÆ9
+şôz>Çñxz½ñ„z«Ïİz/
+¯÷ÿ
+ª÷ü#çµzÿèiöóÕ;è9ÎÅ@.áO¯w XoO·Ş‰¸Rñ!ë½xÿïªõFxòGëøëˆÏ§‚ñzûñ	[§ãqç+NL«®¬×Çaqı=è:JöƒT?š¬Å=˜À|±¼|r|:?ÄxôU§ö÷†¿YÖu$cfÿáGh· 2ü|´ŒñÉ“1±c,Š(‹ô%]àq?©Äni™¶ï¸¡#ïÕ×R˜b©®¥P[¬®ÿÕ¢#_8ùÇ®Ï[iM±Œ'­4·R[ìA4áßø¶*ÓL‚ë·DºR¤Y‘æôµbÿ8GŞÕ}³T÷%:	İÃ1ÈYóŸXÉ)G¯áj1$\ÿ‚€çA¾,W
+_–¿ñş«ˆ¿ğsÿ ıÍc<¦D‰ÀŸöÿ±g7–¤ •¾ågH¼9ït#Àç½NóÙú‰m!¿ûÍBGõ{õè¤:©¨GgÉ¶ó#©Ç¸€z\ªòéôË¼yj]’4IÖN“q5Ğä²Zh’ I²všŒ«&—Ğ$©Ó„ÇÚPiÂ©4Á½*gØs· \Gb|hå¨8órœ£Êçõµé²OÄHüZşÅzùí•‡"óª‰X¾öŒæâk··É“å_İ•¬;1÷eÄ~¹é×‹ırÓÚx¡+´ÉôÏiåñ}«2ù•Y×ïòbY>Šy9D¾¤µ™|Ş¦ÑR>/ˆ:_¢¶ıôµâù¥Úó-âùeÚó'ÅóËÕ>>}‰q€16cŞ^˜Il±úÇ K€|œş‚¨3Ú1{„ÿ!Úÿş7ÖLÛÛ†zp©L««#í}‘·a±h•ì|Ù˜i¥Ó%Ûv¶³YÇ˜éd²Åuª+‚.‡J^®¶³6^œı›`ÿ&Ù¿ÍìßƒÁÎi`‡)°Ø±ìì nˆ‹4!Ò¤H›EÚ"Rùı‘.i«H,À$‹ºÈB²ø|,D(‹s)·cÅİ«„‘¶ÑY¬­¼¦h%»Ó`Ár ãT¡E…•#mçQ«å _!m©³™XÊJuÙ1¤”{´']vŒ4ı6íû6M¿ÍÛ«Ëâè,öÔ@?§R,f×Å.+Ÿ†v ğ#q]Ég:2všjœ.«$.»bI.“*º0è2lcY«lçSkby‡g¨8E;Ÿ6òİ9;'à]ÇòVÎvtÉw«”›ëäR±LÚpºà ƒÈ39™\¨ÆNÙ‚Ú—Òs1oÀãB)g•^ä@{‰u ¤²U†9‹S¨äÓ±´•1\u¼Ë˜ÕÑ‘ÉgÊkXµò…X9UÉä]„xİp†TA|Å=ßÈ(Ñâ'jÆâî^²òğâÓ®5ìJÃ ]·Š²Q!]ÈYÒÕA¸C}qÔ`g*¥KmØ’äBÖğ|/bÆi«$Ûxı`%SZi Cà6ŠÀMÆ3ÉSÖ¹öLÌÊf,~%°È9š)³ğLµTúëüì=Ë^ÌU [»ü†wIy×J‘wì®Y¹kQîæ+w”»…òn&?d‡n9N¦3/Xé÷€LÙö=äò‹Pƒòt¤œ¹‚bÈöV'v®,ßpâù 3æôn­ì*kƒc°÷¬½P(«OrÀ_^"Ï­ÕÏKV®±	U7cM†·÷†bÊ²º0ç)Òx@?Ú´uhkĞ¶ -AÛa!¹n%×‹ä5îÙ®€|(TJ)J)ìt ~cŒÕÇ4(äİç²¼<Àš~ 3ÌØªLºÜÅnœ®L°)”b|¢]Íeİ6åuŞM1P˜Ä‡ÍS!7Ÿ¯òlœù·™´U‘í_Më›dG*»Ï±`kíœ!ñå,ã¥|Êê£²Sà0ÀäùU)İVpJmÙœ ´ª¤Ş{ÛSaBVqlHŠ¤ÒËÎÊvÌİ:5Ó¤²«áÎ(tç”a÷è:/îÛ3´Oá±hòaâ„P8gÁØb9+ÕG¸Ø^YñQDùJ.–i‡Í§«v[ğn‘Ô¸>ãîQ!ü*kåmÙDL…k+[¶™VÈª3@ì;¸uR<ø«É'…•ƒ¡ª+ÓÙÅ!ã'MS\lUÑèÆOexÜ0N2%ÚZ»¡˜|©ÛÍ¬^L’2ŠãTÌ67Çc +dŠ]‚/fâ‚?¡ÿ¢
+ÁdÈ-cİ¶úÔ~ı ¬òN¡ä ˜êQ)ÙF
+ EC	†TX¸Bã5V×ªX£ôÆ0³;ª%Œ™*pÉş¾l¼SûCE­µ3q¬E$
+ƒÑ]²;\Áæò†·Ca¬>‘qÓfâ…V…ŠÓ¯ğ€ÆlDø±{1¨Íä/ˆvğÜ3bÙhZmÊ1§£D'0E&C¿“êÊeÊ‚“}CjHÇmYUd3Á‰İl“H·+hÙÔ–É·a$	ü^(hxÉèÈ»¯Ë¿ôŞJ•±jÙÂ*ú”ñİÙ(¯nãLQ’©BÆ¯
+´hÆ$9iD]	J*§ØL`)´WQò;*T¥rEŒDŞES²ÅCxR®÷º5“.@ş
+HÏÚ…Õì, –ö7iäÏ+üD²«/d_´* Í˜QÛ}•/°
+òñsñ‘›¹ËùØ®»œ£c¾ö&Õ¥*Ä±;âúƒ„ş é¯$ï• y*—†7å©’•î¶ò)Œ!Ê z!k?&ÿ
+VÚàûd4„Ø|©v»-õ	ê$b´¤ô•ºh¥°ÏºÅ¯J!4ººâÎ[ôõª ¯@ÙºVyO±Ú|œwË#bÊ+µ°ŠK#ß“˜•şVT 1E‚ñ Ÿâµ¶iö2äÇ,(¨20dã@ ÕXlyqµÚeÙ‡@Tr(`¡_ñQK6
+ˆØÎN8ÎªL9ÕÕÆ:o©Ø–/”¡3ÚÅ¶,F°@…DN@i%¿-+'mÌÄî»Ò	÷^Ó7Iò&IŞHñÎfyåÿOüud²¶ÓÔ‘ı)oç»çÉƒ^ÇòñçÏ7äâˆš&[ZZqïÏˆ'šãã†ÿ(PAYkšÀ™…rÔwC½ÿôoæ5Mí™|S»åtÕÏ4]>¸Ñ8|´ïÜ3Õ£û^9gŞºâf³zğ•¾³;~vf{G~0JyuÙØÿ¨Ù‘.#™ıÛ«î~¼zô‘ú™ ¨úÂñş§wV{ÎôÜQİ´¯ÿÍ^È>xnßùÇ¶ÿìÌş¾Şf“]N59ÉXºÜë¬X¥ô<T»ÍÁc½?;³yğØ‹ıO=Ö×ûŞÀ·LæËV6;/gå3¶SğX0ÿüğö=ÏõoŞı³3[ jç7œ«nÜñãƒı'7Vw<Ù¿çTßéM?éÙ0øèşşƒo@áƒçxrßÀ3=ı{_†Úı¸ç ÕwòHõÈ£½ïöo=ò“‡9›ôï8ZİõÚÀÁm¼* `ğôëPûGû=Æh‚õpº¬äüæÀ›[úNï<ú> W¿Õÿô±ê±Sğ	ƒi% Öà¹İPçşfS„a×A€Ùv3Ø™?îÙÿ›ç~¼¹wà—úN¾]}ëÙş—E¨l_ïYÈfVwëë}È[İ{úN¾Å0 ğİÀW 1§Ş‚T·<{*@¡&ğ/´ 
+`í:vş™C÷ş·÷Ü"(pü-|¿ù ¸3¢Ã{(	Ğvïí7ò@a¨Ï<P,Í¾SÏá÷o>íİ4pt/Ş<v‰döï}ê…ğ’¬A€E€Íªo|ó¥ê©÷°”İ/1wœïé©x[’Ÿ„Ê H¨	Ô?ceõo;gbÉŞ†–|iÓÀ§8ÅÃ“=Õ]/Tß‡6Şi*ÜætñÖ[“OµÁS`ºş½‡8ÎPQ€j|ŞLjˆÂÖWLöÑ 8øØ»’RĞıÏ<qìü#g«ç6?Ü[}ÚaÛàws4¬n8ˆ]çä›ç{ö !—işøñC&òÉæ÷¹ëßüTuÓÆêÑSÈ,o¼dşxÓæÀëÛª;Ş.3ğòl–#‰ögôîßğ|õöÊGß«îŞ9Ğûò@ï›¢ŒÃnç¬x{ wï¢ıo¾€Dï9ƒß |Î½›>…p„ê†ı½ß®htş±ÕİÇ°qîgXóç÷¢úmñşı×vãİ°ïä–ó¾-‘ıŞ	ÊÄæÛøNÿÁÓƒçxeĞ[™e0M¥J¾)sg&oLnPI›<ôN €ïÂ<¶«ÿÃÕ3=øş`OõÈşşOô–èç&´9h æ¡uÈN›Ğwbóˆzïxgğù×A^¼zš@<ñ
+=xôpÿ“ÇÍn«Ô”Í´+«‰ÃœÇ4kÀvğÜ³@:3iºõB¶ØõøÀÎãÕ3OV9¿qÇÀÙ£Pğ÷üãÄí;yú'=Û)^¿>ğlïşŸô`37õ¿ù<ÇÅÛÉÓ¼ûÀ«Á—6ô>İ¿er+¯š`ÒÓ}½=}§6ƒğƒo@ÂÂÛ¢•)ÍëÈZPo†ìf»£P²—e€ïÕ²T7n<ñ8–ô‘ş­[¹øyb»d0dŠGÎö;Z}ñlß©mÀˆğ)tpÁÕ`?Ô6;İ„“ÑNl†O@ÅÌ¸”w j|ìµê‰· 1 ¯4–	²ôøÉÁscúÎì—LƒÄƒŞÒè$4ùÀw¡‚ÈdŒpÕ³ß†^ì	½½/‹¶G—Ã¯@“@éU7¾Òwú(ôò³£¤xbûÀá7<}÷;'úŸyçÒ¤KH[“™°å¬ÕÜ}¯Ÿ9¬RÖ#½ºù8~yô>çí·ywuës@¬êæCı;· iyIÀØ–Pƒ—6pd¡í!‘_Şº,ò
+Ld€XD9rìgx8~ì~‰C@á¶ñ—ëEÍwï‚ƒä`-…×ß³¤aÖÚ{“m÷Üu×ŠcëÌ€? Åw¶{²ÿí}Gßê?bãÀ  sğ4ÒôÕÓõõ·Üuçm èàA¾¡ş¶;—İù•%MÈ¢M®:QÏ²ÛÚn]vÛM_¾cÅ’¦À'¤^}}ªÓ.Ïi„º¬5A	/š±\ÂløÆ¬ä’³aV¢ÁL~GÖ¦|%›5×™©JÙŒ¥—˜±dl±¹¾F£¶Bä_kŞy–Ìë®ƒ¹SÉ…ƒ™mÎ†<	„m•É%ó©23¾Ê¸±ç‹ıÛ€q†è-;ø 1øòçŸ !y lDªäÑLaÂ˜ÎG®zş k[Ô‡+k—°
+Zì‘@¢ˆH¬['Ç®8{—*ä@qJ›±n3ëXårÉ$8%?{]Â—ÃZ2kø4–æ`U:X«Vš³×K™|Ùœ•X?»‘d96|m5€ÂV/YåúÌõ&ty,ãv½Î\Ğvª«`6]”ÓÌœU„Î[İùr«€yCúgC @Êæ«7İsçò;?p"v–3=^6˜‹30¶c¥Ø…Khi{uÑNÁğ´AŞLÇÌ»—ßÙvÛ­+n[~Ç²ÆÅØyx%?íáæmÓß&á…ÓÕÕ«ĞUÉÄœä<`…†úUV¾¬âiZõÀşA¯¡ïxåÃ7.+t`?ô:VC}=~~÷M+ng”uA(¸É«4ë‡òø<Xñ:¦œ0µÕQdıPíËÓ¤D­sQm·_Êªˆî)ˆÃû/}İ(º£Pà^èé$÷şş½Ïse–ëåØ½Q¡;õœPqwC5y×Ãƒ=T·C”ãCôO¡yîxÇÕ<¥:¿SŒ#R#Ï=Ó¿}×Û9‰êí7}eYÛ-÷,_±ìåwİ¹$^Ÿé0Uâ,6Ë]6ï^ÚÇ‰z;ëØœÃŸcMÛ/‚€
+6>×è ©şwì?tøükÛùl9æg¯K—éı!Yß8,fĞLw8vêü}œ*\…ÅÇâ~Ï)©W€˜<vbğğ‹
+Ïm~ªÏû H™œÑ±
+™z>¨xŒËnêï½ó¦»áŞ{9¯P)9Ğ¤Fd:	\AÃòFåÊ„;~£R³eG´Äµ#P@wá³_ªnÂI è:0ZàÅæã|¼G6ØüªÉ'OòñûÎeËn5¹Úã¸G¶<C:o/Ôô˜ÁÇs®D‰Á‡iğT‚¹$+ 7H!R´VªĞ‘ş$Ì£¶A.>eí¹zöIÌvÛ7}I‘íØU…êÙ£6Ç	ÈLí Sc~Ñ³éû6™es=4¦gVˆıî˜†ÎáVÎÈœ„I¹@Li¡_"5Şß8ßîï€U[ÁƒïƒÊ«ı¯Á\b&”á7A‡f)s?i "Íı²Aº¿‰·˜ög&æ™gNsüÍ&3dòÈ{'
+™kL /Lôø±¼†¡I¾
+!¡/x‚§å8½|sÈ™şÍØ©ùç.Ÿq%Sß¹Ã4¶Uõø3¨}r±áŒË¡,—™ƒ‡JgoèPè¬aÂˆµfçzf¬`â²"\Î-­2Ù ¤V•K&	M¨vZñ/·2©/×Ê·×6]¿^Ó½8L7W)§²×<'™·WyP)P-…¾ÏÃ52@9Õ•+¤Í--ÃÌ—ë¬šÒH~îø‡cªòÀÇ Õoë\ \¿›JVWØ'<v“ÃåÄŒl€Èáu%¯bÕ#o¾JÉfoÊ€†Î<8ûEËçs¨ÎºĞaTóÕ4|pg”è?ÍÑG± %B	 ¨xÚó™xğõÀ~Eã˜ r’óØè}v·7HoeCåSZn4m‡Mî §@©ã“9©J	ıƒ@Ã#“:Q
+›Ùy£xÔ¯‘
+0“wr¢˜ûD˜jÛ/ì`ÒœÂ3Ø Ú.Òöv×Ì9²Šº†óEJ¯Vø†åò,‡hÿ9ñjöÔP÷ÈZ®²s¶¬æì¹¸Éwšå<•T›İğaËEB
+ZR	õ81zJ‘F	'?ˆê¬@tÎW†³U²Ólîê¬s3Í»~¼t©³.‚AÃ…›Ew˜³ïÏK€×:÷çg+¼úÙÏÖ YÈ
+Âù£ìDCõ˜@-5é1.À<Î…9Ãk¸®óäfœñ3Ùˆ’&M[œæù9	Iøˆ)’_ãJN!‚”‹şıË	\›ñ–›Í¡F½»ød WOY-Bädó<óüÁ×„"á:»PcäŠØù§{«‡Ÿõ‹H&“<“æÆwÎï9:xâ›Oo<ş(RÂN*g…Å‹9ú2”ÅÃ zñ©‡×wz[uëamG·scê`ÏvÿÕ]›¡
+</ŸÃ ªüØi>ãè;ydğıS}§Ÿ€Ø<çtu.ÓğE˜Øpk*¢zö\ˆ;w ¸§7¼Ó;ĞûLu„~¾ç}§ôîsmÿÂJºååÁÃÛù$Š/¡R»¹—åêé'Ï?òJuZ4q"n¯Î”¹)Mßšˆƒ‹&Ğç@l!€šÛÑ>ËÖúw2l¶ã¬µïì®«<ò`ğC€NQví€ÁPnæEî>D0åL	[„®0ŠõoÙ†¥2«>´Wÿ[sc¾ª§glú„6®ÑÈ‰Haö6ÁŞŠ~è)d™n‰oHïöõ>ôÏ‡ù\—®m Ñ`NÙÊdÑj‘p§xDÌ4º=wH“h9gíëÅÍî¬plm >Îº™aUØ¹á¼5vÑ[î\5WõVrêù][9“³wÎ×f7‹Yİî\¡¢DíŸİhÿ4gÏ^wı}×Äc‹¸¾rÆÍÅ‹=»"G¾„I]*k[¥6œ#3s´ÔA}d£Ã¦lDDÎßz|şƒU¹‡®ª‰±ó>nÓå¯DGkB—ÁtaU¾ıƒ®äq1FÍL`ns›/.ğäË¼Åˆèöğ÷Oß‚ğj©$e˜#ì|—“Ø’‡»xÄµ%^˜Îû~ÓF±0‰ËªQ5%ãZxƒ2M£>ic6tö Q4tD"bÖÚüúa¬)<õxß™3T`¹Òª!ºÜ ›İ&o‘V˜YN¼ÍúPVÑÅFSqÇ;Ì˜ÈGï-j‘3eÛœx»ºé¶æéÂß´EkjßÙsÕÇÏ‚ºİÿÌsl¡dˆä¾3ûÌˆ¯}öÜ#\4ö:¿owõùgÏ?yÅ¥Z2Ä D<¹±®Ç¨ Z\¡“×ıåÂª»ìØÿÔqÎí:p7('ç¥šÌ:ß5ØıÔ¾ÇÒÚøb_qk:ÿÌ³rl4W*Ù´é¤ºìt4'ŞCWOSËœÊ7o±ÈS,¨¤s—œ”À	ò5Uœó"ró(Ñ¡ÃMÇpÖ¦$ùi¦nPàÎ²Kšãp[ÉgÊK41°"„±XÚvR¥Lİ	—4ˆµĞŞ¹ˆ¶Fñ¶{§ZB pìc±|!ÖÎ&.¢ÌÚĞİ@]†at‘Áwİös'&gî¢š\·"ôï}O¨Ï¿>°ï,ü@÷C=.¸<.JĞ_xÁ@eçÎb£}P)<~²ïÔF® èœd¿‚ñqhÓ•ÑgÍ™cæÍ`4kl4?0ÌF‚¸²„8|«ú”Á515	7&ı€MÜU|2òí¨î8$Rö¾w~ï»>ñÑ!C;æĞó&Vi^Ú>xì„"–ı5 SÅĞ‡ZC"Ü9d™¤¼€™Îr¼Å´ì3ıÛUİ]ƒ‹ß'wöİ"Üõãá‚| Z‚M·ôLT£—aÜ8º×SºâC3iÔù|Âø7ûÇıµµÙÔÿw~"™ôùÿ6Ï_øïş¿‘ÿ¯½¡››ÂxÉhş ¿¾Ö/|¼ŞxuD&^Ú ãÙ{¢b·ç”©9±õu×;µÂ÷<3xøÅ¾“Î?ñjõÍİÜKw×kÕûÑÙ ÷½¾ÓÛ˜Ucwíks/”Ò„=@/×M}§{Æ1t°za¨¡ƒÇ70·)±ø×ıO¡ß.—øğ\Xb¶¾Â_qe§GÏõìE'_fÍ~Â[^~bàôË0ûé”ù¯me®¸ç6Â¸
+EWw>'Êp“Ñ¤gÿÑï ½}j"g¿]İ¼	½µ9s^æ{ôZ^P¢óSğpàåŞêc§­}’»ÄÒ
+rŒê›{·
+«[¤v2¥™õ')Ÿ™6í3Ó¥Æ„¯ïû2¼~À¼¥OgPkºÛ*w-[qÊÎ’k¨{WÙZiºí’ğhşCšmB2oê(Û¥%*ŸÈ•ôíèGuô‘ş}ûqÅûàÕ£›«;^G“ûV×4ì]­nGÇ¶m/"6]å®‹œˆbë”E•1969“q>"T®n>n[„­|9“·™É9m¨º2ÿä#ĞF6·J¾p’—-ZÑ&NM7¿Ç<j^|ä,Tjğ;ÇeíİæÚ|ı¼tÓõÌËJçLÿZÿÖ‘}wbÿpÁIó'Ô“u®ƒıÏÆÙİö§½;n¦5çëão¡3ÃóÇ‘÷¶lã¸À´íü3‡@GÆ ™‡l“ÅúŸ{4¼¾Ó0+±¯w[uã‹®7ïŞCœ‘ÌÊG9ÒÅ`3@æˆ¦êÑgQš¸î›°1İx°zúIÖh|ù%ğ-3[lÆ¾CdnØó–ëÌIß9ÅÁcH—‰±ıåuévÜ¿÷Uj„oˆ  ©aª·š|y2‚f§G“`ENW4Ob?Ş¶|Ùœ!Æİö¡§lßÈ¤ÚÆ¾ŞŞ>àVF%ê—˜ÿ™ŒZ¯™=Ó¥4è¶hÛ=‹ğyÖÇ`_=ûÄÀû;3 <4Å"	‰®B°™&Š|ú=à\h|^ Ãdzóıƒªj{NánŒŞ}t..èìnÄ`¦]t®„IÉ¦}|»  …ğş ×2ï¼é‹Ëî¦^î\ô0sŞ‡N:½o ¡–[wo‚ÆÇ¿ÇÑÄÉÄ-òÓ‹{A’ô?ù.›Ü`Š›ü]÷rYÛ¿÷e1 =ü|ŒrÿÌéóûNp'æqbwón<bãs²m³{ˆfîWC<ªÜ|?	oSÕ-k»\$é;õr…‚}ËvŞ v¬ —ŒB"íG&×.¹ùh»V&#\s×kF,.#Ğ±fëÖóû÷¼Ô‹J8—J{Ş‡©!:a²½@®|¨zëí¼¸B²õ½~€ ´ôÍÄø€Ú[á–Yåå§Âegt:ˆc—ÍX¥`â6æ+“­Á³yH·æÚ¼š]¯J—%ĞåòÖå÷¨—Ò´¡şŞ7­Xj›n¨ÿÏË>#ãLCıŠ›n¾Í}!æ•ntá¼û&’‰ºbId¢­öølùÜéœ{{±EoyûÃ€ŸÂfÃãşYt6\/TùŞ%s'T/NŠÁ+æÙœ]Š†|ĞXÿå;—¯ğ ú¿å0‚âï7Ößq×çÚV ›Jî[î¸iù—4)7õ·/_±d6kY¹¼Î*åÚ3{TîÇ&_ç¶ó:ÚÖ³¥çúˆÜÖ¹ˆçû	˜wiÑr{TnØ½“6(óLä:µëœè÷LÄá˜¯B±‘Ùİ—¡ÚB¶sODæ¢oÍÙ—AİAì wn~œ3%Z¡PUzW$>;¸û,
+U.^Ä(°],|vörîôVÏXÀkŞ ê5³ë)áv¹P­cÊú9i«l›³o¸ö6óÚ³±×&nŒñÖ‹u{Şƒá®¯Ï:‘$ğû®uˆ½kX¡nıÜûìó³¸î:ù&†‹V‚ÙÑnÉ …..öšÖİ±¾ùÈôí.3±Ò|ÇËzÏ2a‘»=øwÜùwICÈ±QUÌ…«ğó[G% wŠsP5NoB¶ìÅÙîzlSı½Ëî¸­e àë7¦“r2> eå½góå¡Ôô‚s ¾‡Nõ:úúr=­ºkkÿwA¿ÄùäK8¢+êÜvü,‰Š_¦©İŠ É~P¬pİ~ßY¼İ“Ñ·çÁô”kÍl•×ÆpWêÁ-Ü´†xóëĞQ½‡©(Sìûw¿1xî WªÛOc‡b„»÷–{–ß­‘®Ëgğ£ÚPÓwÜõUIxyë‚ƒAlùWnºÃ{ÏoÉ{o©ïƒ k(İÑ5ä2F·p`R˜Wfa¸¬|0HGˆ„À·j˜!XˆÌ/v‚,Î/ûI(Ûƒ@Ğ¾B4„·$¤€p›)iı€QxcnMa]Âg5Q¸pa5ÑX¡ q9›é¶Qü‹¯Q;½í®{nYÖvÇò¯,c:*Ë­ìÎ
+ğ¾»/bQq}=¼Éf¦tpsÖÚ$@7™§Œ³@	¹¾Ñ-Fú*,vİÔLÆisìlGNJ”)árÍÆO—sÄ÷V6[XåfĞ¿'-Ü@àësZµ‰™3¯oZï–#H©–4TN…dÖR¦ÛÊ†cEZ_Í1TaJ“7ˆíIÜ²ÁgZ(µw¿Î½º@^£sv\“pÃa¬zúÛ ·Ñ
+D6ÉÀÎÕ·F!}ä¹=¯ôÜÃW¨ûN½U}â®H	  ÕaæSDAP·ßuTDñ®aŞ¼y0ùšgÎ†«ÙbËÆÍ¨9±OqPañdW¦ÜÖ±Úxf©?)›ºãaí=ëù†D`P|Ïï#¶+r—ÁU]¶ˆmjS2Åfº@Ù-=K7ĞNƒÈb³dÖZçÚûÖ/æ—3½ËkïŸí=íy
+§‡u…&èÀû¸cQ€VÜvL¶İ” çÈ½+Ü©tn—X¾¢Á{«ø·¯ìÊ.Àp`CJò¶ùó3sØÎÌ¦oÜwßNÑJÙ7>ğÀõsîŸ··Y#y|C“Ü¿™\?Û·-³‘nLÔf£«»{õßàæU®a›CnO…J²¯¹f${OÛ®¼¶vš¬åë1)Ã¥·5%Mb(ÒÀ#ô}í4}£ÉlšÍù Úîªöcçlâ«ú[Ú¾°dŒµ·´İ-Ò;Yzï²ew.iXâRÎ6œoÃƒz+n.Wù¨Tä´*2÷++q	97%}óoş6›½WÚË£áºY¥âº á}Ï+È¾gß±‡€ÍhšH4p”ØM’ßÜÉnš¡8‰qá‘Ö!¸û2Bİ:|ı]ñB>ê0µÁŠ}§y¥ºšRŸ2@Çµo<÷"öy¶rÅ­¹Mlú&a(m5‹ÜÍZÛ1sÖ=ë×yŸ*5Î ~‰×ák=µÕYD”yó…ş§s¸½zÖPÇõõ)Œ[˜rÛfø\JZÔl7Ó¦½ÚL§9®…Üg¸š‡¶¬û–>°¾‡·Å•™"ô‰»D‡Aì¾é°a‹êàE¥š®W†P"p;ÂòGpaà·µ´_`F·…¥/ÖU(¬”,HÖÄ ãúû[W‚õÊ¡¹°bÓàZwƒöÈqŸŠeÏ"™*òóÒ>70åuŒ­Ù5z+CŸ•RóX9ŞŒ™uõÆjWoºëùÀšT¦°7‹İŒ‹Ç?S„1Âbh«gu×Jm$SÏdZ#ec×’"nËV‰Ï¿ø]&g—äšWFÄõíKP ØØz\Ã¬öğ® Lz†ø”ˆg÷ë—AÙQØ×1ñuí‚zqp470owThO¢z¤bì’cÑ{•N[[Ô¹€½Ú×¦dR`¯jX¦Z­†ÖµWÏ¼/¶ô†kXï{/UO¤»½5‚@¯¼ ÜÅÎÈÅ#Ù‰‘‰ µÂÅf; ¶Rj~JUé”ƒ´:ãXGx™Ö\7uÊVÓ¡üù,ä3Ÿi˜Åæ!±Û–à\dÙj;u/†³]²Î»¾»d+·§¼D›‘@m”õ(q?“x­ôìåhóÙ/w“å½E:şãtÛõ®ÀUsøìÄ;l	û•ş-¯÷oéÁ‰7õ§Ø.Ši»	ìÛw9=Ñ›ıñ³}'ßû“ö?ÊœX÷oŞÍjÃb°^ÛUoŒÍƒ/o01Ô)æ!>‡­Ã é4‘ é ¡È@¤£:ÄR#¬/)cG'jt¶”Üí:·„
+`oÜ°zj^³L–\ªE6\>ÕF°Ñ‹¬P±52Ñ5‚jÈÃ`!müÑ
+2E†…+²ell×=Mì8è²²e“Å/.tt½KNL¡%õÜÊC‹ı‹të 5õ¦Ye¡cÍÃĞNÈLÂş¿I§ò•`ÌÚ‡
+BÈÁ
+ö0¨^m3 2T÷o—øİfÀFÄNa3\?ëÔb¯áî§CÚkĞ%¢9¿Ìb×õvŞ©”ì6æ@„Vpeÿ¼öM rçsƒ€İÈİõåÓ Û+A«½§™ŸÕ~QÁÅæz4z¡¨ğ*)·W‚¤‹à«J™²İÆ…[€.5+±„«µÂ{b‡	]|‰+‹ØÆìŸ9_Rİ„«Ìfr	[›Å(gfb	ßŸ¡;¬MI1‰»ÎÌ÷ş| +.:„ûÔr‡NFÓä¼r®Øà+Ê›b&…9:•+òXM"¾SOILşÆ]-JºóN†dõ•Hcì‰xımùÂ*NsBt 7n‘>ª‚mo0]_Ü¶Ç|«;L…›š±•ÌğzI˜h¨€¾7?ğîb£?aÀ§‚HábŸZ2ë—¨M±”"Æäx#gWQïY°$ç¶'o,f=vGÛd#ô÷îúF×¨¼/â,³Ú€9«‚ÁPíez­“ğYšq’ÅğğÖQ\é´eçØ*xâAX$zßF=ÌšqÄ&=3{°’aSõÊĞ!¨o6Ï1T©¼­‘¶²ù1@.glG> )c8ÕuEZñ+f_ï·{½¡=_½6ô#‚„{ó2ÂÅ	aÙ4gYäQè0ífÙ1ädÂ±´ÈÆR ³Dxİp­Ó¸>ïÛçÍ‚‘Z2è?-bdOe½?ošõ`¾6©‚§,=–dF4¨â¬{¤ûº(J»(¶ó¥7Å7Ì…Ì-WOTïaôçV?±‘RWNœTSzÆ\i‡éÛ…ªPFÌ·®¹¥ínÿ\k%Pş–¶/Ü7+ó Ğ¾ÈîîfwúRâJe	Éd:W#Ñô<ÇIÅ×‹Z±‡®StƒFSã)³¡·Ûıõút
+š@
+Ş
+"na/.!ó˜$Ì}ÅİfÔçnBZ%=[Tc­xE¾Q2Ì†«ouçán•6swè&®âkıw¢·÷wl†étuó{î¶…½}'wÒ½ªtå› ÑäÙ¨ˆ^Ca(ñêG÷
+¹^ˆZ¹l;‚^Š+x¥Öm—2kt.®˜í†JtE´¾
+24Ó
+t—Í±ÖÑÆbÅ»âñºªÅ^Ú‡IÓÅõYsæ@rC¢±1ÀZHd¸Àr;º€	¡ß»ë=¶SÉHtÅÅ¶Që¸¦™/(®oØÅA–)$n´"_ÕÃH³YğqMÊºô}ö	¶Õã	UÛÄ·*07Ú!÷åU·ìèßµÛİë · 7ÛİPİ½yğåG¹ı
+7:˜Ü÷ğü«oU·¾ÒÔp:şn9ØùâÀÑÃ‡ß`Œ@ÛEá"¹#BìÀÀ­?PÙC› ½çÇ=Ïh{%~Òóğp6Jà:²W‚à‰Ø.1Ä^	øº†â =Û5[FÏÊS›E¶ë ½rˆ\Ë·¬oB_!×»v}K¾¶†0ä©DlA›ªÈĞÃBe&á.^U÷Á`Ìú“¯qTzœhÜo–“”O^`*uüluë˜¿ĞYnxAºşnw°ÌfŞL;e´|3Wè¶¥ØÁ§g	·F¡Bcgd‘»*º>AZh=Ö3z7†|»Öí“J¸ç @Ç"P5cSVM‹pÜä…$Væ5ëë‰Ñ”7dHLñZ²‘Fôbw«ñJú,şjX¬Ro€ÀpØñ »‚¬0]¶wç#ı‡CX¥Y.£*0*¹¬3± :A‹¡N90À+>Ší¼>ê† ÄlîSàè%ì‘XU† d­Õ0‹Ío5íÒc	;HpP%ö']¾]ï‹èç"‡rƒ;+çsrw¨bÅoÚZgq^•°Õb9óvFbm*$Ğ#!X±}ÕíTèÕÿÌ‹.ëÑğÄY..WwdDlÙ;Ál-7y¼mfsø?sšCö±-0½;½^ÀëÚ°8`²fçS¶*FÍ™Ê #˜{¤‹*E&7ó4ñè TB¦0¨)òQ½Œ—ˆ²ššî¶‚%ÊdÒRqÛ¸ŒV(’¹ë¦{rVÇ[úŞô ©¼—øáBB•Añ…Aß ŠØM	oêõ_Z@cHıÛè}F	¿?„hMÎÊ8ñ‚¡zq^=-Õó-èm‹ÃV-!ÕÙ7nô0^‹?&˜Ô40ÒóÓRı”mãã;
+aÒëÈ¬
+†ÚöiT\È±üº˜cËİf÷;fß¼ìsËï\½jÕorU%¹ÒàEíÙ]=o¯.«Ùø·ê³ewŞº6Ó1çšt£é‡´hbŸ‘¿Šµ‚¬¬ö ©H	0LtHQ.=Qƒ&”¹#½_=óHƒê-O¤.ÖÅ©¨xPi7»f›Ğ­nŒ;s
+,,l&´â„WÜÔ¥}£â³{'ßS^=ğ¬ÑB´êâ6Ÿâ¦Èa)80\øª<—È¼´ $ÄD¥òs¢Á÷¿¶Œ!¦>Œ…ÚØ«M´©(\;SÎ£Í˜ı wU©Å›ìbD„-q­¦»E}—`qwXõ@\K´8¦Üæ7ğVoõÙmÀ}gqÓmCsû0pt¶ßàÍÜÑ §ûÑÃË;Å—ÜK_‰ÁŞ‘€”êhíåÄ	äÑÃæµióüáS¢B.Q¡=Ó…6< ¹¢ípŒÌ‡S¸ä0îËÅWr™Ñ.#2«¡¨©„Á‡,6•PL²ß2d ‚W÷5–¹çñÈ=ˆó~£Zå$?E¼)š<^a|…Ì4
+B^!dÎ-B.­¹¥`eöD+Èİ¨•å±7DóâÒî=Wz3–¶U›«Rf,ë×Š½?ïjÓ¨Y›xºÛyé9á›çŸØÒÿf/ß €®>çTwöòĞP³šæ"´w$[½MÀÌä=Gøè+,Ó•†ÆĞ¢@ñB¨ÀøH¡!¬åuòVÑéÂ3Î½>°ñeP/Ò+qsí²JvÓªBjM»]â'‘7ÉìMàÊÏ[8&°íŸ(ï¶ãun#!öòµ	zPíÚ…1<Ÿ=È©ŒSæ^½Ø$ÒXËÆc¼`ôé®Å2sÛ1ïô¦ØEå‰ oç™©ì*Ó6‹™Ú0¥hÄ;S2Kr¥®%[Ã¸ :øš‚¼…K_eXÀ7µı`ŞõÂ+ô_¼u	ß~`…I1›f,†ş¼Â×Éß‹EÔl4VÆb\>72®ÂZı gö\4S€zİ×Ğµˆ‰œR¸\Çq÷¨ÃB8 n1U`³¶à	Uœë<Lãšƒçö0å£”BÖ>ñ¶ß÷Ğ|³ÿ©7û¿³aà•mŞl† .,û{O6‘RB¢ş¯‚
+‹Óè.‰“Êwdòi3,Ô;Cİœ´H>¦5Êh6óš„»4R¶Ã×İ"Ë)¯)ÚfZ–  +–×	w¦ÙÿÎ+ıîÂxW‹GÚ¸èBû²4sƒòÆ3h<ØûòÀ×ÆˆFItö­ê·w i›/B=…RYÀÖ§1DêŞ—y|µê.”Š2rëVî¬Ïø-"çğ +ß~_úzz†,¶Tê›~r‡Ãå·İ»dÖìûË³]×Ãóf¡”éòÉbÊ¾[ˆÃ¼D¹ŞzoÄ~/¨ø,„ìÙ›Gò˜zÒH±Ÿ}Â46†4øÂº3"¯l²4p &ª˜§Ä~Gºº,ŞBÃĞ(DJ"q:¸éÆ?Ú½óüc,x±¸&‹NÄCjÉØ¸›OQHy “zz`ñáEÛ!Áä£™‡ñ¯gZ¦+†+B…i“ÏíænR›ßwOë–ë§'7ò\wEs)‡Kh‡§#ïŞ¤Ëë‰Fİã'™Æw!Ö¹ÒrÖÉ¡e+|à#i¼A0I‹ËdÆ¿ÿ}¤ñ_}QOÆ<şë‚––ø¯ñDsBÿÚ’ˆ'ÿ=şëGñÇ
+ëo%aÑoË¬&1ûä|ÚBçBó®7™‹9Âñ°¨ qCÄ’q¡!©åŸâ!Ñ©œ­ıÊ“dí«’-ßjí|ÚÎ§2¶³$_ Q-c“âv¦Ã/ß¿»zf—ŒºÆa»ç¸W,È¹ïäÖş“'ÍàâÅ26©c ŒvÀÍ‘¨˜ÕãoÿÿÛ»ºŸ¦¡(şŞ¿â¾¡&Í&ŒCæƒ<øÂ0<Bºµ¸šu%kgÂÄL7ÃQ2Tğƒ@¢‹ağ‘ğ_xÏ½·İh;1d2Î„4ëú±ÛsîÇ9¿ßæK§~«Õ x_$x-î)ùºïFÄ'mW…O¼Ø	<Õ›goèiAp Ve¤Ÿ N?9y2Ï]É3jó›s éÎHf›ëÚ´ğ0Ó)ßEÄµâ6,¿€çë£=®Áxt¸åTw<ª/àÿYşælğˆ}B¢‡·=FÊS–û#Â›H’î%ùÖ„4F;q	®aˆ)µRè}µ—í(#j†¢ólÖÛ4,$f4‹r$G-5›Æ•7f}ut¹@¯*îGBŞşïn‡€3ü4àÿÅÑÿ÷Èÿßâ©|<Ã@¢E»úŠM;ÎÌí¨ºÍ|‹©;ÜQHX	Ïá*üÌb¼»)é†flvLRK'®EÑœÏşa‘ı¿èàĞ€Ÿÿ?>4ˆöß#ûWìtÆOB}š£ËËYlÒœ»	(æ’3tÀG-ê&$øÇTõ)]S>—¶³'Õ·?8=tæ<úXß7OÑ@tÜgw¶¸¤»Bp¨#Ûãßy™ÿÔşı?æßÛÜÿãÑ«hÿ=²ÿQ‘¾ŞŠÿ½_ê·ˆª¥ÌB.­]–:×›u%¬‹÷0,²c¿½Ëöä¸½ÀùŸxÜÿc±~´ÿŞÙ?¼$y39BR4^Y ®j¶–¶¡Ì‡tÃĞT]±µì1s„õ¿™¤]“|q
+Š%‘ñÒ3€Ğ{öhÿ³+@\òÖd€8üç#·–‘R>®8sµfy÷xuEÈ8Tw ’{ ®—ÿ^e¬¶Ñ€óäÀÆ›aéì4°Îó~nÀ’ùúçá™=gOwTí¡li¶m<‡6bÌcçuc’Íü¸;Âg½:úL^¤~ØËà…]X£ÛÍ/KB¨M&ôrá ûIg‹õ$W"ì©û|ã¤XqJu6ZPk±ÿ”_&~˜ØÓ‚"@ ZZ$Š‘ÒïÌ‚Eª§¯d¾-}m¾~Ì'?>ğ,8¶ö8K[t‹Ê»0ƒTªó	6xB¯ÊbË½R³\èwugoDm^lÿš­0]Q¨ÿ€J´O«ÇËE(U‚Våú±Ñ\y~êaµˆ$ì¾å4éƒŞi†{ş¹Q\2,XŞÊÈ°|Ì¾Z6«RÃîªğ0™¦747S¡Ë”}88E @ @ @ D7ñƒ|Ü  à 

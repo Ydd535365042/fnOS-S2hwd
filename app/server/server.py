@@ -59,9 +59,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hwctl  # noqa: E402
 import hwinfo  # noqa: E402  （只读本地兜底路径用：非 root 且无 agent 时的 /api/hwinfo）
 import s2security
-import s2ops
+import s2notify
 import s2risk
-from s2store import Problem, ALL_SCOPES
+from s2validation import Problem, ALL_SCOPES, integer
 import alerts  # noqa: E402  （硬件告警：后台线程定时检查，记录给右上角铃铛）
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -85,19 +85,17 @@ LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 # 所有硬件写操作均通过敏感操作授权；只读查询可以保留无口令访问。
 READ_OPS = ("status", "hwinfo", "logs", "integration_status")
-OPS_READ = {"me", "overview", "history", "disks", "diagnostics", "report", "schedule", "guard", "fleet", "integration"}
-OPS_CONTROL = {"schedule", "maintenance", "guard", "diagnostics/repair"}
-_OPS = None
-_OPS_LOCK = threading.Lock()
+_NOTIFIER = None
+_NOTIFIER_LOCK = threading.Lock()
 
 
-def get_ops():
-    global _OPS
-    with _OPS_LOCK:
-        if _OPS is None:
-            _OPS = s2ops.Operations(os.environ.get("S2_OPERATIONS_DIR") or os.path.join(VAR_DIR, "operations"), hw_call,
-                                    hwctl.collect_sensor, lambda: ALERTS.snapshot(200))
-        return _OPS
+def get_notifier():
+    global _NOTIFIER
+    with _NOTIFIER_LOCK:
+        if _NOTIFIER is None:
+            directory = os.environ.get("S2_OPERATIONS_DIR") or os.path.join(VAR_DIR, "operations")
+            _NOTIFIER = s2notify.Notifier(directory, lambda: ALERTS.snapshot(200))
+        return _NOTIFIER
 
 # 电源操作的一次性确认码：nonce -> (action, 过期时刻)。见 Handler._power。
 # 重启和脚本执行同级门禁（_danger_ok）：没配口令时只认本机，配了口令凭口令。
@@ -621,6 +619,19 @@ def factory_script(name):
     return path if os.path.isfile(path) and not os.path.islink(path) else None
 
 
+def script_review(name, value=None):
+    # Retain only script review snapshots; no operations database or background writer.
+    path = os.path.join(VAR_DIR, "script-reviews", hashlib.sha256(name.encode()).hexdigest() + ".json")
+    if value is not None:
+        try: s2security.atomic_text(path, json.dumps(value, ensure_ascii=False), mode=0o600)
+        except (OSError, ValueError): pass  # Execution has already started; do not report it as unstarted.
+        return value
+    try:
+        with open(path, encoding="utf-8") as stream: value = json.load(stream)
+        return value if isinstance(value, dict) and isinstance(value.get("hash"), str) and isinstance(value.get("content"), str) else None
+    except (OSError, ValueError): return None
+
+
 def inspect_script(name, factory=False):
     path = factory_script(name) if factory else script_by_name(name)
     if not path:
@@ -631,8 +642,7 @@ def inspect_script(name, factory=False):
         raise Problem("脚本过大")
     digest = hashlib.sha256(content).hexdigest()
     preview = content[:65536].decode("utf-8", "replace")
-    with get_ops().store.db() as db:
-        old = db.execute("SELECT hash,content FROM scripts WHERE name=?", (("factory:" if factory else "")+name,)).fetchone()
+    old = script_review(("factory:" if factory else "") + name)
     return {"name": name, "sha256": digest, "size": len(content), "content": preview,
             "factory": factory,
             "risks": s2risk.inspect(content, name, DEFAULT_SCRIPTS_DIR),
@@ -768,10 +778,6 @@ button:disabled{opacity:.5;cursor:not-allowed}
                          "connect-src 'self'; form-action 'self'; base-uri 'none'; object-src 'none'")
 
     def _json(self, obj, code=200):
-        if self.command == "POST" and urllib.parse.urlsplit(self.path).path.startswith("/api/"):
-            principal = self._principal()
-            get_ops().store.audit(urllib.parse.urlsplit(self.path).path + (":" + getattr(self, "_audit_op", "") if getattr(self, "_audit_op", "") else ""),
-                                  principal["name"] if principal else "anonymous", self._remote(), obj.get("ok", False))
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -926,7 +932,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self._json({"ok": False, "msg": "读取默认脚本失败", "detail": str(e)}, 500)
             return
         if not names:
-            self._json({"ok": False, "msg": "出厂默认脚本目录为空"}, 500)
+            self._json({"ok": True, "added": [], "skipped": [], "scripts": hwctl.list_scripts(),
+                        "msg": "内置自愈与灯光功能已整合到控制页的模块管理"})
             return
 
         os.makedirs(SCRIPTS_DIR, exist_ok=True)
@@ -1019,10 +1026,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
         return self._principal_cached
 
     def _resolve_principal(self):
-        store = get_ops().store
         token = self._session_token()
         if token.startswith("s2k_"):
-            return store.key_principal(token)
+            return None  # Automation keys belonged to the removed operations feature.
         if SESSIONS.valid(token):
             subject = SESSIONS.subject(token)
             if subject is not None:
@@ -1152,7 +1158,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
         # 以前「找不到就回落 index.html 并返回 200」，等于把 public/ 变成一个
         # 任何路径都答 200 的文件服务器：既分不清「真的不存在」和「首页」，
         # 也让 public/ 里任何被顺手扔进去的东西都自动对外可读。
-        if (rel not in ("index.html", "app.js", "style.css", "auth.js", "login.js", "manage.html", "manage.js", "manage.css")
+        if (rel not in ("index.html", "app.js", "style.css", "auth.js", "login.js", "notifications.html", "notifications.js", "notifications.css")
                 or not inside or not os.path.isfile(full)
                 or not full.endswith(self.STATIC_EXT)):
             self.send_error(404)
@@ -1281,7 +1287,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self._auth_fail_json()
             return
         if path.startswith("/api/ops/"):
-            self._ops_get(path[len("/api/ops/"):])
+            self._json({"ok": False, "msg": "接口已移除"}, 404)
+            return
+        if path == "/api/notifications":
+            if not self._require_scope("admin"): return
+            self._json({"ok": True, "data": get_notifier().notifications()})
             return
         if not self._require_scope("scripts" if path.startswith("/api/script/") else "read"):
             return
@@ -1372,29 +1382,6 @@ button:disabled{opacity:.5;cursor:not-allowed}
         else:
             self._json({"ok": False, "msg": "未知接口"}, 404)
 
-    def _ops_get(self, route):
-        if not self._require_scope("read" if route in OPS_READ else "admin"):
-            return
-        try:
-            query = {key: value[0] for key, value in self._query().items()}
-            self._json({"ok": True, "data": get_ops().get(route, query, self._principal())})
-        except Problem as error:
-            self._json({"ok": False, "msg": str(error)}, error.status)
-        except (ValueError, OSError, TypeError):
-            self._json({"ok": False, "msg": "设备数据读取失败，请检查运行日志"}, 500)
-
-    def _ops_post(self, route, body):
-        if not self._require_scope("control" if route in OPS_CONTROL else "admin"):
-            return
-        principal = self._principal()
-        try:
-            result = get_ops().post(route, body, principal)
-            self._json({"ok": True, "data": result, "msg": "操作成功"})
-        except Problem as error:
-            self._json({"ok": False, "msg": str(error)}, error.status)
-        except (ValueError, OSError, TypeError):
-            self._json({"ok": False, "msg": "操作未完成，请检查配置与设备状态"}, 500)
-
     # ---- POST ----
     def do_POST(self):
         if hasattr(self, "_principal_cached"):
@@ -1430,7 +1417,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
             self.close_connection = True
             self._json({"ok": True, "msg": "已退出登录"})
             return
-        scope = None if path == "/api/hw" or path.startswith("/api/ops/") else (
+        scope = "admin" if path.startswith("/api/notifications") else None if path == "/api/hw" or path.startswith("/api/ops/") else (
             "scripts" if path.startswith("/api/script/") else "admin" if path == "/api/restart" else "control")
         if scope and not self._require_scope(scope):
             return
@@ -1460,7 +1447,15 @@ button:disabled{opacity:.5;cursor:not-allowed}
             return
 
         if path.startswith("/api/ops/"):
-            self._ops_post(path[len("/api/ops/"):], body)
+            self._json({"ok": False, "msg": "接口已移除"}, 404)
+            return
+        if path in ("/api/notifications", "/api/notifications/test"):
+            try:
+                data = get_notifier().save_notifications(body) if path == "/api/notifications" else get_notifier().send_test()
+                audit("notifications:save" if path == "/api/notifications" else "notifications:test", {}, remote, True)
+                self._json({"ok": True, "data": data})
+            except (Problem, OSError, ValueError) as error:
+                self._json({"ok": False, "msg": str(error)}, getattr(error, "status", 400))
             return
         if path in ("/api/power/prepare", "/api/power"):
             self._power(path, body, remote)
@@ -1486,20 +1481,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
                 "admin" if op in ("set_port", "config_apply", "config_snapshot", "config_validate") else "scripts" if op == "patch" else "control")
             if not self._require_scope(scope):
                 return
-            tracked = op in ("set_fan", "set_led_override", "set_beep", "set_power_schedule", "set_fan_guard")
-            if tracked:
-                try:
-                    get_ops().version("修改前自动备份", self._principal()["name"])
-                except (Problem, ValueError, OSError, TypeError):
-                    self._json({"ok": False, "msg": "无法备份当前配置，尚未执行修改，请先检查配置文件"}, 503)
-                    return
             self._audit_op = op
             r = hw_call(op, params)
-            if tracked and r.get("ok"):
-                try:
-                    get_ops().version("自动保存", self._principal()["name"])
-                except (Problem, ValueError, OSError, TypeError):
-                    r["msg"] = (r.get("msg") or "配置已生效") + "；版本记录保存失败，请检查存储空间"
             audit("hw:%s" % op, params, remote, r.get("ok"))
             self._json(r)
 
@@ -1592,11 +1575,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
                         raise Problem("正在运行的任务已达到上限", 409)
                     if any(j["name"] == name for j in active_jobs):
                         raise Problem("该脚本正在运行，不能重复启动", 409)
-                    from s2store import integer
                     timeout = integer(body.get("timeout", 600), 10, 3600)
                     job = start_job(p, timeout=timeout, expected_hash=inspected["sha256"])
-                    with get_ops().store.db() as db:
-                        db.execute("INSERT OR REPLACE INTO scripts VALUES (?,?,?)", (("factory:" if factory else "")+name, inspected["sha256"], inspected["content"]))
+                    script_review(("factory:" if factory else "") + name, {"hash": inspected["sha256"], "content": inspected["content"]})
                 audit("script:start", {"name": name, "sha256": inspected["sha256"]}, remote, True)
                 self._json({"ok": True, "job": job, "name": name})
             except Problem as error:
@@ -1658,10 +1639,10 @@ def main():
     global _ALERT_WATCHER
     write_pid()
     cleanup_jobs()
+    get_notifier().start()
     if os.environ.get("S2_ALERTS", "1") != "0":
         _ALERT_WATCHER = alerts.Watcher(ALERTS, _alert_collect)
         _ALERT_WATCHER.start()
-    get_ops().start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     sys.stderr.write("S2 硬件控制台 监听 0.0.0.0:%d (root=%s)\n" % (PORT, hwctl.is_root()))
     if not TOKEN:

@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import signal
 import threading
 import time
 
@@ -1263,6 +1264,13 @@ def scan_patch_modules():
         conf = kv.get("CONF", "").strip()
         if conf and not os.path.isabs(conf):
             conf = os.path.join(base, conf)
+        bundle_hash = ""
+        if kv.get("BUNDLED") == "1":
+            try:
+                with open(os.path.join(base, "bundle.json"), encoding="utf-8") as stream:
+                    bundle_hash = json.load(stream).get("sha256", "")
+            except (OSError, ValueError):
+                pass
         out.append({
             "id": d,
             "title": kv.get("TITLE", d),
@@ -1275,6 +1283,8 @@ def scan_patch_modules():
             "disable": [s.strip() for s in kv.get("DISABLE", "").split(",") if s.strip()],
             "module_ver": kv.get("MODULE_VER", ""),
             "requires": req,
+            "bundled": kv.get("BUNDLED") == "1",
+            "sha256": bundle_hash,
         })
     _PATCH_SCAN_CACHE["sig"] = sig
     _PATCH_SCAN_CACHE["out"] = list(out)
@@ -1313,6 +1323,8 @@ def patch_view(m, svc=None):
         "deployed": bool(m["script"]) and os.path.isfile(m["script"]),
         "services": {s: svc.get(s, "unknown") for s in m.get("services", [])},
         "version": m.get("module_ver", ""),
+        "bundled": m.get("bundled", False),
+        "sha256": m.get("sha256", ""),
     }
 
 
@@ -1347,10 +1359,50 @@ def _module_fail(title, verb, msgs, out):
 
 
 def _run_module(script, sub, timeout=30):
-    """执行模块脚本的一个子命令。sub 已过 MODULE_SUBCMD_RE，且不经 shell。"""
+    """Persist complete bundled-module output in the same private job directory."""
     if not script or not os.path.isfile(script):
         return 127, "模块脚本不存在"
-    return run(_module_argv(script, sub), timeout=timeout)
+    if timeout < 180:
+        return run(_module_argv(script, sub), timeout=timeout)
+    import uuid
+    identifier = uuid.uuid4().hex
+    directory = os.path.join(VAR_DIR, "jobs")
+    log = os.path.join(directory, identifier + ".log")
+    code, process = 1, None
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        if os.path.islink(directory): return 1, "任务目录无效，尚未执行模块"
+        s2security.atomic_text(os.path.join(directory, identifier + ".meta"), json.dumps({
+            "name": os.path.basename(os.path.dirname(script)) + " · " + sub,
+            "timeout": timeout, "cancellable": False, "kind": "bundled"}), mode=0o600)
+        with open(log, "x", encoding="utf-8") as output:
+            os.chmod(log, 0o600)
+            process = subprocess.Popen(_module_argv(script, sub), stdout=output, stderr=subprocess.STDOUT,
+                                       start_new_session=os.name == "posix")
+            try: s2security.atomic_text(os.path.join(directory, identifier + ".pid"), str(process.pid), mode=0o600)
+            except OSError: pass  # Continue waiting for the process already launched.
+            try: code = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                if os.name == "posix":
+                    try: os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError: pass
+                else: process.terminate()
+                try: process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    if os.name == "posix":
+                        try: os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError: pass
+                    else: process.kill()
+                    process.wait()
+                output.write("\n模块操作超时，请检查执行结果后重试\n")
+                code = 124
+    except OSError as error:
+        return 1, "模块执行失败：" + str(error)
+    finally:
+        try: s2security.atomic_text(os.path.join(directory, identifier + ".rc"), str(code if code >= 0 else 128-code) + "\n", mode=0o600)
+        except OSError: pass
+    with open(log, encoding="utf-8", errors="replace") as stream:
+        return code, stream.read()[-131072:]
 
 
 def op_patch(params):
@@ -1388,7 +1440,7 @@ def op_patch(params):
 
     msgs = []
     for a in seq:
-        rc, out = _run_module(m["script"], a, timeout=30)
+        rc, out = _run_module(m["script"], a, timeout=180 if m.get("bundled") else 30)
         if rc != 0:
             msgs.append((out or "").strip() or ("%s %s 失败（退出码 %d）" % (m["title"], a, rc)))
             bust_services_cache()  # 模块脚本可能在失败前已经动过某些服务
@@ -1409,7 +1461,7 @@ def _remove_module(m):
     script = m.get("script", "")
     if script:
         for a in m.get("disable") or []:
-            rc, out = _run_module(script, a, timeout=30)
+            rc, out = _run_module(script, a, timeout=180 if m.get("bundled") else 30)
             if rc != 0:
                 msgs.append((out or "").strip() or ("还原 %s 失败（退出码 %d）" % (a, rc)))
                 if _CJK_RE.search(out or ""):
@@ -1669,6 +1721,8 @@ def op_set_beep(params):
     conf = load_app_conf(APP_BEEP_CONF)
     conf["beep_ms"] = ms
     conf["boot_beep"] = bool(params.get("boot_beep", conf.get("boot_beep", True)))
+    conf["BEEP_PROMPT"] = conf["boot_beep"]
+    conf["BEEP_BOOT"] = conf["boot_beep"]
     save_app_conf(APP_BEEP_CONF, conf)
     return True, "蜂鸣时长已保存为 %d ms" % ms
 

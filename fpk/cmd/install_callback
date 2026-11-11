@@ -56,7 +56,7 @@ fi
 python3 "$NATIVE_DIR/s2deploy.py" install "$NATIVE_DIR/.." >> "$VAR_DIR/server.log" 2>&1 || exit 1
 python3 "$NATIVE_DIR/s2deploy.py" scripts "$NATIVE_DIR/.." --scripts-dir "$VAR_DIR/scripts" >> "$VAR_DIR/server.log" 2>&1 || exit 1
 if [ "$BOOT_SVC" = "true" ]; then
-    python3 "$NATIVE_DIR/s2deploy.py" lights >> "$VAR_DIR/server.log" 2>&1 || echo "灯光美化未启用，请查看安装日志" >> "$VAR_DIR/server.log"
+    python3 /etc/s2hwctl/patches.d/s2-lights/runner.py apply >> "$VAR_DIR/server.log" 2>&1 || echo "灯光美化未启用，请在控制页查看模块状态和安装日志" >> "$VAR_DIR/server.log"
 fi
 
 # ---- 共享目录里放一份 README，方便用户从「文件管理 → 应用文件」丢脚本进来 ----

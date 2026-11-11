@@ -38,7 +38,7 @@ def info(name, size, mode, is_dir=False):
 
 def lf_only(path, data):
     # 脚本、单元文件、配置不能带 CRLF：bash 会把 \r 当成命令的一部分
-    if path.endswith((".png", ".dtb", ".PNG")) or b"\0" in data[:4096]:
+    if path.endswith((".png", ".dtb", ".PNG", ".run")) or b"\0" in data[:4096]:
         return data
     if b"\r\n" in data:
         print("  修正 CRLF →", path)
@@ -155,14 +155,15 @@ an = set(ta.getnames())
 for need in ("server/server.py", "server/hwctl.py", "server/hwinfo.py", "server/alerts.py", "server/public/app.js",
              "server/s2security.py", "server/public/login.js", "agent/install-hw-agent.sh",
              "server/public/auth.js",
-             "server/s2store.py", "server/s2ops.py", "server/s2hardware.py", "server/job_runner.py",
-             "server/public/manage.html", "server/public/manage.js", "server/public/manage.css", "firmware/s2_schedule.py",
+             "server/s2validation.py", "server/s2notify.py", "server/s2hardware.py", "server/job_runner.py",
+             "server/public/notifications.html", "server/public/notifications.js", "server/public/notifications.css",
+             "firmware/s2_schedule.py",
              "firmware/s2_disk.py",
              "server/public/index.html", "server/public/style.css", "agent/s2hw-agent.py",
              "server/s2native.py", "server/s2activation.py", "server/s2deploy.py", "server/s2dtb.py", "server/s2lights.py",
              "server/s2risk.py",
              "agent/fnos-s2-native.service", "agent/fnos-s2-dtb-guard.path", "agent/fnos-s2-led-boot.service",
-             "dtb/rk3568-witxiaohui-s2.dtb", "server/default_scripts/00-硬件自检.sh", "server/default_scripts/20-升级S2设备树.sh"):
+             "dtb/rk3568-witxiaohui-s2.dtb", "server/s2bundle.py", "bundled/s2-selfheal/package.run", "bundled/s2-lights/package.run"):
     if need not in an:
         errs.append("app.tgz 缺 " + need)
 ds = sorted(n.rsplit("/", 1)[1] for n in an if n.startswith("server/default_scripts/") and n.endswith(".sh"))
