@@ -1116,17 +1116,30 @@ button:disabled{opacity:.5;cursor:not-allowed}
         return bool(principal and any(s in principal.get("scopes", []) for s in ("admin", "control", "scripts")))
 
     def _write_origin_ok(self):
+        """写请求必须来自本站页面（防跨站提交）。
+
+        浏览器给的 Sec-Fetch-Site 是按页面实际来源算的，经过反向代理也不变：有它就只看它。
+        飞牛 App / 远程访问的代理会把 Host 改成设备内网地址，而 Origin 仍是外部域名，
+        只拿 Origin 和 Host 比，手机上会一律被当成跨站拒绝（登录页报「请求来源不受信任」）。
+        没有 Sec-Fetch-Site 的老浏览器才比 Origin，并认代理转发的原始主机名。"""
+        site = self.headers.get("Sec-Fetch-Site", "")
+        if site:
+            return site in ("same-origin", "none")
         origin = self.headers.get("Origin")
-        if origin:
-            try:
-                parsed = urllib.parse.urlsplit(origin)
-                if (parsed.scheme not in ("http", "https") or parsed.username is not None
-                        or parsed.password is not None or parsed.path or parsed.query or parsed.fragment
-                        or parsed.netloc.lower() != self.headers.get("Host", "").lower()):
-                    return False
-            except ValueError:
-                return False
-        return self.headers.get("Sec-Fetch-Site", "") not in ("cross-site", "same-site")
+        if not origin:
+            return True
+        try:
+            parsed = urllib.parse.urlsplit(origin)
+        except ValueError:
+            return False
+        if (parsed.scheme not in ("http", "https") or parsed.username is not None
+                or parsed.password is not None or parsed.path or parsed.query or parsed.fragment):
+            return False
+        hosts = {self.headers.get("Host", "").lower()}
+        forwarded = self.headers.get("X-Forwarded-Host", "")
+        if forwarded:
+            hosts.add(forwarded.split(",")[0].strip().lower())
+        return parsed.netloc.lower() in hosts
 
     @staticmethod
     def _safe_next(nxt):
@@ -1477,7 +1490,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
         path = self._norm(urllib.parse.urlsplit(self.path).path)
         self._audit_op = ""
         remote = self._remote()
-        if not self._write_origin_ok():
+        # 登录不做来源校验：它只在响应里返回会话、不设 Cookie，跨站页面读不到响应，也无法借此替人登录。
+        # 手机上的 App 内置浏览器经代理访问时来源信息常常对不上，校验只会把真用户挡在外面
+        if path != "/login" and not self._write_origin_ok():
             self.close_connection = True
             self._json({"ok": False, "msg": "请求来源不受信任，请从控制台操作"}, 403)
             return
