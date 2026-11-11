@@ -49,7 +49,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.1.5"
+APP_VER = "1.1.6"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -1276,10 +1276,11 @@ def validate_patch_module(mid, kv, base):
         if v and not SEMVER_RE.match(v):
             errs.append("%s 非法（应为语义版本如 1.0.0）: %s" % (field, v))
 
-    for item in kv.get("SERVICES", "").split(","):
-        s = item.strip()
-        if s and not MODULE_UNIT_RE.match(s):
-            errs.append("SERVICES 含非法服务名: %s" % s)
+    for field in ("SERVICES", "BOOT_TASKS"):
+        for item in kv.get(field, "").split(","):
+            s = item.strip()
+            if s and not MODULE_UNIT_RE.match(s):
+                errs.append("%s 含非法服务名: %s" % (field, s))
 
     for field in ("ENABLE", "DISABLE"):
         for item in kv.get(field, "").split(","):
@@ -1377,6 +1378,8 @@ def scan_patch_modules():
             "script": script,
             "conf": conf,
             "services": [s.strip() for s in kv.get("SERVICES", "").split(",") if s.strip()],
+            # 只在开机 / 关机时跑一下就退出的服务（如开机指示灯）：平时停着是正常的
+            "boot_tasks": [s.strip() for s in kv.get("BOOT_TASKS", "").split(",") if s.strip()],
             "enable": [s.strip() for s in kv.get("ENABLE", "").split(",") if s.strip()],
             "disable": [s.strip() for s in kv.get("DISABLE", "").split(",") if s.strip()],
             "module_ver": kv.get("MODULE_VER", ""),
@@ -1414,6 +1417,14 @@ def patch_view(m, svc=None):
     enabled = module_installed(m)
     if svc is None:
         svc = services_state(m.get("services", []))
+    boot = set(m.get("boot_tasks", []))
+
+    def state(s):
+        st = svc.get(s, "unknown")
+        # 开机指示灯这类服务开机时亮一下就正常退出，systemd 报 inactive（simple）或 done（oneshot），
+        # 重装模块后连运行记录都没有。标「未运行」/「已执行」都会让人以为灯坏了：统一说它什么时候跑。
+        # failed 仍原样报出。
+        return "boot" if s in boot and st in ("inactive", "done") else st
     return {
         "id": m["id"],
         "title": m["title"],
@@ -1421,7 +1432,7 @@ def patch_view(m, svc=None):
         "desc": m["desc"],
         "enabled": enabled,
         "deployed": bool(m["script"]) and os.path.isfile(m["script"]),
-        "services": {s: svc.get(s, "unknown") for s in m.get("services", [])},
+        "services": {s: state(s) for s in m.get("services", [])},
         "version": m.get("module_ver", ""),
         "bundled": m.get("bundled", False),
         "sha256": m.get("sha256", ""),

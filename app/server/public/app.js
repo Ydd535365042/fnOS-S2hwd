@@ -483,7 +483,7 @@
      否则「服务状态」在三处各翻一遍，用词迟早对不上。原文（sda / eth0 / systemd
      单元名 / RAID 原始状态……）仍然留一份在 title 里，排障时用得上。 */
   const ZH_SVC = {
-    active: "运行中", done: "已执行", failed: "失败", inactive: "未运行",
+    active: "运行中", done: "已执行", failed: "失败", inactive: "未运行", boot: "开关机时运行",
     activating: "启动中", deactivating: "停止中", reloading: "重载中", unknown: "未知",
   };
   const zhSvc = (s) => ZH_SVC[s] || "异常";
@@ -3301,7 +3301,8 @@
     // 没装的模块，它声明的服务当然查不到：不摆一排「未知」，看着像出错
     const svc = Object.keys(m.services || {}).filter((k) => m.enabled || m.services[k] !== "unknown").map((k) => {
       const st = m.services[k];
-      return '<span class="svc' + (st === "active" || st === "done" ? " on" : "") + '" title="' + esc(k) + '">' +
+      const tip = st === "boot" ? k + "：只在开机 / 关机时运行一下，平时停着是正常的" : k;
+      return '<span class="svc' + (st === "active" || st === "done" || st === "boot" ? " on" : "") + '" title="' + esc(tip) + '">' +
         esc(zhSvc(st)) + "</span>";
     }).join("");
     const desc = m.desc || "（无说明）";
