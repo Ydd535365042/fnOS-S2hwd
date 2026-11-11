@@ -438,6 +438,9 @@ input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;bac
 .mini-time input[type=time]{font:600 16px var(--f-num);border:1px solid var(--accent);border-radius:5px;background:var(--card);color:var(--fg);padding:3px 5px}
 .switch{position:relative;display:inline-block;width:40px;height:23px;flex:none}
 .switch input{position:absolute;opacity:0}
+/* 开关本身只有 40×23，手机上不好点：用一层透明伪元素把可点区域四周各放大一圈，外观不变 */
+.switch::before{content:"";position:absolute;top:-10px;right:-8px;bottom:-10px;left:-8px}
+.switch input:focus-visible+.track{outline:2px solid var(--accent);outline-offset:2px}
 .switch .track{position:absolute;top:0;right:0;bottom:0;left:0;border-radius:999px;background:var(--track);transition:.2s;cursor:pointer}
 .switch .track::after{content:"";position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 1px 3px #0003}
 .switch input:checked+.track{background:var(--accent)}

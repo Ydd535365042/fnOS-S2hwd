@@ -414,7 +414,8 @@
       upEl.title = "设备已运行 " + txt;
       upEl.setAttribute("aria-label", "设备已运行 " + txt);
     }
-    if (upEl) upEl.classList.remove("is-na");
+    // 每秒都会走到这里：类名已经对了就别再写，classList.remove 即使没有这个类也会重写一次属性、触发样式重算
+    if (upEl && upEl.classList.contains("is-na")) upEl.classList.remove("is-na");
     setText("set-uptime", txt);
     return txt;
   }

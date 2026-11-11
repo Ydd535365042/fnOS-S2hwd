@@ -24,8 +24,15 @@ SERVICE = "fnos-s2-native"
 
 
 def read(path, default=""):
-    try: return Path(path).read_text(encoding="utf-8").strip()
+    # 每 2 秒要读几十个 sysfs 小文件：直接 open 比 Path.read_text 少一层路径对象的开销
+    try:
+        with open(path, encoding="utf-8") as stream: return stream.read().strip()
     except (OSError, UnicodeError): return default
+
+
+# 温度区、告警阈值、LED 列表开机后基本不变：扫一次缓存起来，定期重扫，别每个 2 秒节拍都 glob 一遍。
+# 风扇节点不缓存——「恰好一个 pwm-fan」是安全条件，每拍都要确认。
+DISCOVERY_TTL = 60
 
 
 def number(value):
@@ -97,18 +104,33 @@ class Native:
         while self.fan() is None and clock() < deadline: sleep(.25)
         return self.fan() is not None
 
-    def cpu(self):
-        temperatures, trips = [], []
-        for zone in (self.root/"sys/class/thermal").glob("thermal_zone*"):
+    def _zones(self):
+        """[(temp path)], min trip — rescanned every DISCOVERY_TTL seconds."""
+        now = time.monotonic()
+        cached = getattr(self, "_zone_cache", None)
+        if cached and now - cached[0] < DISCOVERY_TTL: return cached[1], cached[2]
+        paths, trips = [], []
+        for zone in sorted((self.root/"sys/class/thermal").glob("thermal_zone*")):
             kind = read(zone/"type").lower()
             if not any(s in kind for s in ("cpu", "soc")): continue
-            value = number(read(zone/"temp"))
-            if value is not None and 0 < value <= 125000: temperatures.append(value/1000)
+            paths.append(str(zone/"temp"))
             for path in zone.glob("trip_point_*_temp"):
                 if read(path.with_name(path.name.replace("_temp", "_type"))) not in ("passive", "critical"): continue
                 value = number(read(path))
                 if value is not None and 0 < value <= 125000: trips.append(value/1000)
-        return (max(temperatures) if temperatures else None, min(trips) if trips else None)
+        trip = min(trips) if trips else None
+        # Nothing found (driver not up yet): do not cache, look again next tick.
+        if paths: self._zone_cache = (now, paths, trip)
+        return paths, trip
+
+    def cpu(self):
+        paths, trip = self._zones()
+        temperatures = []
+        for path in paths:
+            value = number(read(path))
+            if value is not None and 0 < value <= 125000: temperatures.append(value/1000)
+        if paths and not temperatures: self._zone_cache = None    # zone gone or unreadable: rescan next time
+        return (max(temperatures) if temperatures else None, trip)
 
     def write(self, path, value):
         path = Path(path)
@@ -175,7 +197,13 @@ class Native:
         return status
 
     def leds(self):
-        return [p for p in sorted((self.root/"sys/class/leds").glob("*")) if (p/"brightness").exists()]
+        now = time.monotonic()
+        cached = getattr(self, "_led_cache", None)
+        if cached and now - cached[0] < DISCOVERY_TTL and all(os.path.exists(p/"brightness") for p in cached[1]):
+            return list(cached[1])
+        found = [p for p in sorted((self.root/"sys/class/leds").glob("*")) if (p/"brightness").exists()]
+        self._led_cache = (now, found)
+        return list(found)
 
     def led(self, node, trigger="none", on=False):
         if self.led_history_error: raise ValueError(self.led_history_error)
@@ -247,9 +275,14 @@ class Native:
             except OSError: pass
 
     def control_stamp(self):
+        # Called 8 times per 2 s cycle: keep the paths as plain strings instead of rebuilding Path objects.
+        paths = getattr(self, "_stamp_paths", None)
+        if paths is None:
+            paths = self._stamp_paths = [str(p) for p in (self.runtime/"force_until", self.runtime/"manual_duty",
+                                                          self.conf/"fan.conf", self.conf/"led-override.conf")]
         stamp = []
-        for path in (self.runtime/"force_until", self.runtime/"manual_duty", self.conf/"fan.conf", self.conf/"led-override.conf"):
-            try: stamp.append(path.stat().st_mtime_ns)
+        for path in paths:
+            try: stamp.append(os.stat(path).st_mtime_ns)
             except OSError: stamp.append(0)
         return stamp
 

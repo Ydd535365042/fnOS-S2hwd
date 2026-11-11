@@ -106,8 +106,15 @@
       <section class="view is-active" data-view="overview">
         <div class="grid">
 
-          <!-- 关键指标：指针仪表盘。由 app.js 的 renderGauges() 填充并逐次重绘 -->
-          <div class="gbar col-12" id="gbar"></div>
+          <!-- 关键指标：指针仪表盘。由 app.js 的 renderGauges() 填充并逐次重绘。
+               这里先放四块同尺寸的空壳（同一个 viewBox、同样的标签行）：app.js 还在下载时浏览器就会先画一帧，
+               空容器高度为 0，等骨架画出来下面所有卡片会整体往下跳一大截 -->
+          <div class="gbar col-12" id="gbar">
+            <div class="gauge na"><svg viewBox="0 0 160 116" aria-hidden="true"></svg><div class="lb"><b>处理器温度</b><small></small></div></div>
+            <div class="gauge na"><svg viewBox="0 0 160 116" aria-hidden="true"></svg><div class="lb"><b>硬盘温度</b><small></small></div></div>
+            <div class="gauge na"><svg viewBox="0 0 160 116" aria-hidden="true"></svg><div class="lb"><b>风扇转速</b><small></small></div></div>
+            <div class="gauge na"><svg viewBox="0 0 160 116" aria-hidden="true"></svg><div class="lb"><b>内存占用</b><small></small></div></div>
+          </div>
 
           <div class="card col-8">
             <div class="card-hd">
