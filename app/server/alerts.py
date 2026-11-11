@@ -275,7 +275,9 @@ def evaluate(store, sensor, hw, services, now=None):
     # 风扇全速持续
     duty = _num((sensor or {}).get("fan_duty"))
     if duty is not None:
-        if duty >= 100 and (sensor or {}).get("fan_mode") != "test":
+        mode = (sensor or {}).get("fan_mode")
+        chosen = mode == "test" or (mode == "manual" and _num((sensor or {}).get("fan_manual")) == 100)
+        if duty >= 100 and not chosen:
             if store._fan_full_since is None:
                 store._fan_full_since = now
         else:

@@ -1,7 +1,7 @@
 """Standalone email/Webhook delivery, retaining existing notification settings."""
 import contextlib, http.client, ipaddress, json, os, smtplib, socket, sqlite3, ssl, threading, time, urllib.parse
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formatdate, make_msgid, parseaddr
 from s2validation import Problem, integer
 
 SEND_ERRORS = (OSError, ValueError, http.client.HTTPException, smtplib.SMTPException)
@@ -213,7 +213,7 @@ class Notifier:
             title = str(event.get("title", "设备告警")).replace("\n", " ").replace("\r", " ")[:150]
             message["Subject"] = "fnOS-S2 " + ("【%s】" % level if level else "") + title
             message["Date"] = formatdate(localtime=True)
-            message["Message-ID"] = make_msgid(domain=config["sender"].rpartition("@")[2] or None)
+            message["Message-ID"] = make_msgid(domain=parseaddr(config["sender"])[1].rpartition("@")[2] or None)
             message.set_content(event_text(event))
             context = ssl.create_default_context()
             if mail_security(config) == "ssl":

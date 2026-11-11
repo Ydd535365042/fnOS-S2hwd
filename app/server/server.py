@@ -37,6 +37,7 @@ POST /api/restart          {port} 改端口并自重启
 """
 
 import hmac
+import gzip
 import hashlib
 import difflib
 import signal
@@ -148,6 +149,7 @@ SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-\u4e00-\u9fa5]{1,64}$")
 
 JOBS = {}
 JOB_LOCK = threading.Lock()
+_GZIP_CACHE = {}
 _AGENT_STATE = {"ok": None, "ts": 0.0}
 _AGENT_LOCK = threading.Lock()
 _AGENT_PROBE_LOCK = threading.Lock()   # 让并发请求排队探测，别一起去 ping
@@ -468,6 +470,21 @@ def _pid_alive(pid):
         return False
 
 
+def _pid_reused(pid, pidf):
+    """设备重启后 PID 会被别的进程占用：那个进程比 .pid 文件还晚启动，就不是当初的任务。
+    否则任务永远显示「运行中」，页面每次打开都接回它，运行按钮一直灰着。"""
+    if os.name != "posix":
+        return False
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            ticks = int(f.read().rsplit(")", 1)[1].split()[19])      # 第 22 项 starttime
+        with open("/proc/stat") as f:
+            boot = next(int(line.split()[1]) for line in f if line.startswith("btime"))
+        return boot + ticks / os.sysconf("SC_CLK_TCK") > os.path.getmtime(pidf) + 2
+    except (OSError, ValueError, IndexError, StopIteration):
+        return False
+
+
 def read_job(job):
     """任务快照 {lines, done, rc, lost}。内存里没有（控制台重启过）就从 var/jobs 读。"""
     log, rcf, pidf = _job_files(job)
@@ -516,7 +533,7 @@ def read_job(job):
                     pid = int(f.read().strip() or "0")
             except (OSError, ValueError):
                 pid = 0
-            if not _pid_alive(pid):
+            if not _pid_alive(pid) or _pid_reused(pid, pidf):
                 done, rc = True, None     # 控制台重启前就已经结束、又没留下退出码
     # 日志超过 256KB 时只读了尾部：总行数按整个文件的换行数算，页面才不会把新行当旧行吞掉。
     # 只数上次之后新增的那一段，别每 700ms 把整份日志从头读一遍。
@@ -534,7 +551,11 @@ def read_job(job):
                         break
                     counted += chunk.count(b"\n"); left -= len(chunk)
             total = (prev_total if start else 0) + counted
-            _LINE_COUNTS[job] = (size, total)
+            if left == 0:
+                _LINE_COUNTS[job] = (size, total)
+            # 和小日志那条路口径一致：没写完换行的最后一行也算一行，跨过 256KB 时总数才不会倒退
+            if raw and not raw.endswith(b"\n"):
+                total += 1
         except OSError:
             pass
     return {"lines": lines, "total": total, "done": done, "rc": rc,
@@ -676,9 +697,14 @@ def managed_jobs():
         if os.path.islink(JOBS_DIR) or not os.path.isdir(JOBS_DIR):
             filenames = []
         else:
+            def mtime(name):
+                try:
+                    return os.path.getmtime(os.path.join(JOBS_DIR, name))
+                except OSError:      # 清理线程刚好删掉这一个：排到最前，别让整份列表作废
+                    return 0
             metas = [f for f in os.listdir(JOBS_DIR) if f.endswith(".meta")]
             # 按时间取最近 256 个：文件名是随机 uuid，按名字排序等于随机挑
-            filenames = sorted(metas, key=lambda f: os.path.getmtime(os.path.join(JOBS_DIR, f)))[-256:]
+            filenames = sorted(metas, key=mtime)[-256:]
     except OSError:
         filenames = []
     for filename in filenames:
@@ -1226,9 +1252,25 @@ button:disabled{opacity:.5;cursor:not-allowed}
         except OSError:
             self.send_error(404)
             return
+        # 页面三件套未压缩有 300KB 以上，文本压缩后不到三分之一；按 (文件, ETag) 缓存压缩结果，
+        # 每个版本只压一次，不占每次请求的 CPU。
+        gzipped = False
+        if len(data) > 1024 and full.endswith((".html", ".js", ".css", ".svg")) \
+                and "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+            key = (full, etag)
+            packed = _GZIP_CACHE.get(key)
+            if packed is None:
+                packed = gzip.compress(data, 6)
+                if len(_GZIP_CACHE) > 32:
+                    _GZIP_CACHE.clear()
+                _GZIP_CACHE[key] = packed
+            data, gzipped = packed, True
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if gzipped:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Vary", "Accept-Encoding")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("ETag", etag)
         self.send_header("Last-Modified", last_mod)

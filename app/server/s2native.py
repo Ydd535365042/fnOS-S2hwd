@@ -142,7 +142,8 @@ class Native:
             if duty == 0 and node and (number(read(node/"pwm1")) or 0) > 0:
                 if max(curve(None if cpu is None else cpu+2, config, "CPU"), curve(highest+2, config, "HDD")) >= 30:
                     duty = 30
-        except (ValueError, TypeError): duty, reason = 100, "温控曲线无效"
+            hot = (cpu is not None and cpu >= int(config.get("CPU_T3", 72))) or highest >= int(config.get("HDD_T3", 52))
+        except (ValueError, TypeError): duty, reason, hot = 100, "温控曲线无效", True
         if cpu is None: reason = "CPU 温度传感器无效"
         elif cpu >= min(85, trip-1 if trip is not None else 85): reason = "达到内核温控安全阈值"
         force = number(read(self.runtime/"force_until")) or 0
@@ -150,8 +151,9 @@ class Native:
         manual = int(manual) if manual is not None and 30 <= manual <= 100 else None
         if reason: duty, mode = 100, "protect"
         elif force > now: duty, mode = 100, "test"
-        # Manual speed never undercuts the full-speed anchor or the protection paths above.
-        elif manual is not None: duty, mode = (100 if duty >= 100 else manual), "manual"
+        # Manual speed may run below the curve only while both sources are under their third anchor;
+        # from there on the curve wins whenever it asks for more.
+        elif manual is not None: duty, mode = (max(manual, duty) if hot else manual), "manual"
         else: duty, mode = max(duty, 30 if unknown else 0), "auto"
         actual = self.fan_write(duty)
         status = {"timestamp": str(int(now)), "mode": mode, "guard_reason": reason,
@@ -233,6 +235,13 @@ class Native:
                 if trigger == "none": self.write(Path(name)/"brightness", brightness)
             except OSError: pass
 
+    def control_stamp(self):
+        stamp = []
+        for path in (self.runtime/"force_until", self.runtime/"manual_duty", self.conf/"fan.conf", self.conf/"led-override.conf"):
+            try: stamp.append(path.stat().st_mtime_ns)
+            except OSError: stamp.append(0)
+        return stamp
+
     def run(self):
         if not self.capabilities()["ready"]: raise RuntimeError(self.capabilities()["detail"])
         stopped = threading.Event()
@@ -269,7 +278,10 @@ class Native:
                 if notice != last_notice:
                     print(notice.strip(" | ") or "原生温控正常", flush=True)
                     last_notice = notice
-                stopped.wait(2)
+                # Sample every 2 s, but react within 0.25 s when the console changes a control file.
+                seen = self.control_stamp()
+                for _ in range(8):
+                    if stopped.wait(0.25) or self.control_stamp() != seen: break
         finally:
             self.restore_leds()
             self.fan_write(100)  # Stay safe until the original controller resumes.

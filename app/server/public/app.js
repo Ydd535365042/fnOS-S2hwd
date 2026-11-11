@@ -370,13 +370,16 @@
   }
   // innerHTML 版本：列表类容器（硬盘表、网卡格、文件系统…）整表重建开销比单个文本节点大得多，
   // 拼好的字符串先跟上一次比较，相同就整体跳过——不必维护「哪一行变了」这种细粒度 diff。
-  function setHtmlIfChanged(el, html) {
+  function setHtmlIfChanged(el, html, keepSelection) {
     if (!el) return;
     if (el.__lastHtml === html) return;
-    // 用户正在这块里选中文字（比如复制硬盘序列号）时先不重建，否则每次轮询都把选区冲掉；
-    // 不记 __lastHtml，选区一松开，下一轮照常更新
-    const sel = window.getSelection && window.getSelection();
-    if (sel && !sel.isCollapsed && sel.anchorNode && el.contains(sel.anchorNode)) return;
+    // 每次轮询都会变的列表（硬盘表、网卡格）：用户正在里面选中文字（比如复制序列号）时
+    // 先不重建，否则选区每轮都被冲掉；不记 __lastHtml，选区一松开下一轮照常更新。
+    // 只给轮询驱动的列表用：由用户操作触发的重画（删脚本、模块操作完成）必须立刻生效
+    if (keepSelection) {
+      const sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && sel.anchorNode && el.contains(sel.anchorNode)) return;
+    }
     el.__lastHtml = html;
     el.innerHTML = html;
   }
@@ -1156,7 +1159,7 @@
           return diskRowHtml(d, dispName);
         }).join("")
         : '<tr><td colspan="10" class="empty-row">未检测到硬盘</td></tr>';
-      setHtmlIfChanged(tbody, html);
+      setHtmlIfChanged(tbody, html, true);
     }
 
     const totalBytes = disks.reduce((a, d) => a + (has(num(d.bytes)) ? num(d.bytes) : 0), 0);
@@ -1316,7 +1319,7 @@
       const html = nics.length
         ? nics.map((n, i) => nicCardHtml(n, i)).join("")
         : '<span class="hw-wait">等待采样…</span>';
-      setHtmlIfChanged(grid, html);
+      setHtmlIfChanged(grid, html, true);
     }
     const upN = nics.filter((n) => (n.live ? n.live.up : n.up)).length;
     setText("net-sum", nics.length ? nics.length + " 个网卡 · " + upN + " 个在线" : "—");
@@ -1653,6 +1656,7 @@
   // 用户动过曲线格子之后，轮询就不再拿后端配置覆盖它 —— 否则每 10 秒把正在编辑的值改回去
   let curveDirty = false;
   let fanTesting = false;   // 「全速 10 秒」进行中：挡住重复点击
+  let fanTestGrace = 0, fanTestUntil = 0;
 
   // /api/state 的 conf.fan（KEY=VALUE 字符串）→ {hdd, cpu} 曲线；缺的格子用出厂值，硬盘 T4 夹到上限
   function curveFromConf(fan) {
@@ -1740,10 +1744,13 @@
     const duty = num(s.fan_duty);
     // 控制器自己报的状态优先：保护 / 测试 / 手动时转速不是曲线决定的
     if (s.fan_mode === "protect") return "保护全速" + (s.fan_guard ? " · " + s.fan_guard : "");
-    if (s.fan_mode === "test") return "全速测试中";
+    if (s.fan_mode === "test") {
+      const left = Math.ceil((fanTestUntil - Date.now()) / 1000);
+      return "全速测试中" + (left > 0 ? " · 剩 " + left + " 秒" : "");
+    }
     if (s.fan_mode === "manual") {
       const m = num(s.fan_manual);
-      return "手动 " + (m === null ? "" : m + "%") + (duty === 100 && m !== null && m < 100 ? " · 已到全速点" : "");
+      return "手动 " + (m === null ? "" : m + "%") + (duty !== null && m !== null && duty > m ? " · 温度偏高，按曲线 " + duty + "%" : "");
     }
     if (cpu === null && hdd === null) return "等待采样";
     const cpuD = curveDuty(cpu, fanCurve.cpu) || 0;
@@ -1760,6 +1767,10 @@
 
   /* 把一次实时采样画到界面上。sensor 来自 /api/sensor，字段可能是空串（没装固件）。 */
   function applyFanReading(sensor) {
+    // 全速测试刚发出的头几秒，控制器还没采样到：先按测试中显示，别被旧读数打回去
+    if (fanTesting && Date.now() < fanTestGrace && sensor.fan_mode !== "test" && sensor.fan_mode !== "protect") {
+      sensor = Object.assign({}, sensor, { fan_duty: 100, fan_mode: "test" });
+    }
     const duty = num(sensor.fan_duty);
     const cpu = num(sensor.cpu_temp);
     const hdd = num(sensor.hdd_max_temp) || null;
@@ -1970,15 +1981,15 @@
 
   document.getElementById("curve-back").addEventListener("click", () => {
     // 没保存就返回：撤销改动，回到设备上实际在跑的曲线和档位。
-    // 不撤销的话档位一直显示「自定义」、轮询也不再同步，直到刷新页面
-    if (curveDirty) {
-      curveDirty = false;
-      errBox.hidden = true;
-      const fan = S2.state && S2.state.conf && S2.state.conf.fan;
-      if (fan) { fanCurve = curveFromConf(fan); setFanProfile(fan.TEMP_PROFILE || "custom"); }
-      renderCurveInputs();
-      toast("未保存的改动已撤销，风扇仍按原曲线运行");
-    }
+    // 不撤销的话档位一直显示「自定义」、轮询也不再同步，直到刷新页面。
+    // 填了非法值（报错但没算成改动）同样要还原，不能留在格子里
+    const touched = curveDirty || !errBox.hidden;
+    const fan = S2.state && S2.state.conf && S2.state.conf.fan;
+    curveDirty = false;
+    errBox.hidden = true;
+    if (fan) { fanCurve = curveFromConf(fan); setFanProfile(fan.TEMP_PROFILE || "custom"); }
+    renderCurveInputs();
+    if (touched && fan) toast("未保存的改动已撤销，风扇仍按原曲线运行");
     flipFan(false, true);
   });
 
@@ -2043,12 +2054,17 @@
   const fanAutoBtn = document.getElementById("fan-auto");
   const fanManualHint = document.getElementById("fan-manual-hint");
   let fanManualOn = false, fanManualHold = 0, fanManualTimer = 0, fanManualSeq = 0;
+  // 轨道的填充长度由 --p 决定（全站滑块共用的样式），值一变就要跟着写
+  function paintFanSlider() {
+    fanSlider.style.setProperty("--p", ((fanSlider.value - 30) / 70) * 100 + "%");
+  }
   function showFanManual(on, duty) {
     fanManualOn = on;
     fanManualBox.classList.toggle("is-on", on);
     fanAutoBtn.hidden = !on;
     fanManualHint.hidden = !on;
     if (on && duty) fanSlider.value = duty;
+    paintFanSlider();
     fanSliderVal.textContent = on ? fanSlider.value + "%" : "自动";
   }
   function syncFanManual(sensor) {
@@ -2069,6 +2085,7 @@
     fanManualBox.classList.add("is-busy");
     const res = await hw("fan_manual", { duty: duty });
     if (seq !== fanManualSeq) return;          // 期间又拖了一次，以最后一次为准
+    fanManualSending = false;
     fanManualBox.classList.remove("is-busy");
     fanManualHold = Date.now() + 4000;         // 给控制器一个采样周期（2 秒）把新状态写出来
     if (!res.ok) {
@@ -2087,13 +2104,24 @@
   }
   fanSlider.addEventListener("input", () => {
     fanManualHold = Date.now() + 60000;
+    paintFanSlider();
     fanSliderVal.textContent = fanSlider.value + "%";
     fanManualBox.classList.add("is-on");
   });
   fanSlider.addEventListener("change", () => {
     clearTimeout(fanManualTimer);
+    fanManualSending = true;
     fanManualTimer = setTimeout(() => sendFanManual(parseInt(fanSlider.value, 10)), 250);
   });
+  // 拖了一下又放回原位：浏览器不会触发 change，也就没有请求发出去。
+  // 松手后要把「看起来像手动」的显示还原，并让轮询重新接管
+  let fanManualSending = false;
+  const fanSliderRelease = () => setTimeout(() => {
+    if (fanManualSending || fanManualBox.classList.contains("is-busy")) return;
+    fanManualHold = 0;
+    syncFanManual(S2.sensor || {});
+  }, 400);
+  ["pointerup", "touchend", "keyup", "blur"].forEach((t) => fanSlider.addEventListener(t, fanSliderRelease));
   fanAutoBtn.addEventListener("click", () => { clearTimeout(fanManualTimer); sendFanManual(0); });
 
   /* 全速测试：后端写 force_until，固件 3 秒内把风扇拉到 100%，到期自己回温控。
@@ -2114,17 +2142,30 @@
       return;
     }
     toast("风扇全速运行 " + FAN_TEST_SEC + " 秒，之后自动回到原来的曲线");
-    applyFanReading(Object.assign({}, S2.sensor || {}, { fan_duty: 100 }));   // 读数立刻跳到 100%，不等轮询
-    setTimeout(pollSensorOnly, 600);
+    // 控制器 2–3 秒才采样一次：这段时间拉回来的还是旧转速，不能让它把读数打回去
+    fanTestGrace = Date.now() + 3500;
+    fanTestUntil = Date.now() + FAN_TEST_SEC * 1000;
+    // 背面没有转速读数，测试时翻回正面才看得到风扇在全速；正在改曲线就不打断
+    if (!curveDirty) flipFan(false, true);
+    applyFanReading(S2.sensor || {});
+    let responded = false;
     for (let left = FAN_TEST_SEC; left > 0; left--) {
       btn.textContent = "全速中（" + left + "）";
       await new Promise((r) => setTimeout(r, 1000));
+      await pollSensorOnly();
+      const s = S2.sensor || {};
+      if (s.fan_mode === "test" || s.fan_mode === "protect" || num(s.fan_duty) >= 95) responded = true;
+      if (!responded && left === FAN_TEST_SEC - 5) {
+        toast("风扇控制器没有响应全速测试，请到「控制 → 脚本库」运行「00-硬件自检」", "err");
+      }
+      applyFanReading(s);
     }
     fanTesting = false;
+    fanTestGrace = fanTestUntil = 0;
     btn.textContent = label;
     btn.disabled = false;
     fanFollowUp();
-    toast("全速测试结束，风扇回到原来的曲线");
+    if (responded) toast("全速测试结束，风扇回到原来的曲线");
     refreshState();
   });
 
@@ -2629,9 +2670,10 @@
   }
 
   // 跟随一个正在设备上跑的任务，把输出接到执行日志。启动脚本和「页面重开后接回」共用。
-  function followJob(job) {
+  function followJob(job, cancellable) {
     runJob = job;
-    termStop.hidden = false;
+    // 内置模块的安装任务不能中途终止（没有可终止的进程组），不摆一个点了必然失败的按钮
+    termStop.hidden = cancellable === false;
     termStop.disabled = false;
     let seen = 0, missFrom = 0, missNoted = false;
     const finish = () => { termStop.hidden = true; setRunning(false); stopPolling(); };
@@ -2687,7 +2729,16 @@
     if (!runJob || termStop.disabled) return;
     termStop.disabled = true;
     const res = await apiPost("/api/script/cancel", { id: runJob });
-    if (!res.ok) { termStop.disabled = false; toast(res.msg || "停止失败", "err"); return; }
+    if (!res.ok) {
+      // 设备确认不了这个任务（已结束、或进程早就不在了）：不再跟随，否则运行按钮会一直灰着没有出路
+      termWrite((res.msg || "停止失败") + "，已不再跟随这个任务", "err");
+      termStatus.textContent = "已放弃";
+      termStatus.style.color = "var(--term-err)";
+      termStop.hidden = true;
+      setRunning(false);
+      stopPolling();
+      return;
+    }
     toast("已请求停止，等待脚本退出");
   });
 
@@ -2703,7 +2754,7 @@
     termStatus.textContent = "运行中";
     termStatus.style.color = "var(--term-warn)";
     termReset("$ " + (job.name || "任务") + "　（已接回正在运行的任务）");
-    followJob(job.id);
+    followJob(job.id, job.cancellable !== false);
   }
 
   /* ---------- 脚本库 ---------- */
@@ -3282,18 +3333,32 @@
     return refreshing;
   }
 
+  // 采样按「发出的先后」编号：慢的那次（比如跟着 /api/state 一起等的）晚到时，
+  // 不能盖掉后发先到的新读数，否则风扇读数会往回跳一下
+  let sensorSent = 0, sensorTaken = 0;
+  async function fetchSensor() {
+    const seq = ++sensorSent;
+    const se = await apiGet("/api/sensor");
+    if (se) se.__seq = seq;
+    return se;
+  }
+  function takeSensor(se) {
+    if (se.__seq < sensorTaken) return false;
+    sensorTaken = se.__seq;
+    return true;
+  }
   async function refreshStateOnce() {
     try {
       const [st, se] = await Promise.all([
         apiGet("/api/state"),
-        apiGet("/api/sensor").catch(() => null),
+        fetchSensor().catch(() => null),
       ]);
       if (!st || !st.ok) throw new Error((st && st.msg) || "接口返回失败");
       S2.state = st.data;
       S2.access = st.access || null;
       S2.online = true;
       S2.lastErr = "";
-      if (se && se.ok) S2.sensor = se.data;
+      if (se && se.ok && takeSensor(se)) S2.sensor = se.data;
       applyState();
       syncAccessUI();
     } catch (e) {
@@ -3317,8 +3382,8 @@
     if (sensorPolling) return;
     sensorPolling = true;
     try {
-      const se = await apiGet("/api/sensor");
-      if (se && se.ok) {
+      const se = await fetchSensor();
+      if (se && se.ok && takeSensor(se)) {
         S2.sensor = se.data;
         if (sensorFails) { sensorFails = 0; S2.online = true; }
         applySensorOnly();
@@ -3453,10 +3518,10 @@
     // ---- 风扇策略与曲线（先于读数：读数的「哪一路触发」要用到曲线）----
     const fan = d.conf && d.conf.fan;
     if (fan) {
-      fanProfile = fan.TEMP_PROFILE || "custom";
-      // 只有用户没在编辑时才用后端的值覆盖本地，
-      // 否则正在拖的格子会被这一轮 60 秒的重快照改回去
+      // 只有用户没在编辑时才用后端的值覆盖本地（档位和曲线一起），
+      // 否则正在改的格子会被这一轮 60 秒的重快照改回去，保存时还会带上错的档位
       if (!curveDirty) {
+        fanProfile = fan.TEMP_PROFILE || "custom";
         const rawT4 = num(fan.HDD_T4) || 55;
         fanCurve = curveFromConf(fan);
         // 夹过一次就告诉用户，只提示一次 —— /api/state 每轮都带着这段配置，每次都弹就成噪音了

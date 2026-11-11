@@ -48,7 +48,7 @@ import s2dtb
 # 那个才是权威值；开发机 / 直接跑源码时没有这个文件，就退回下面的常量。
 # 前端设置页显示的是这里返回的值 —— 不要再往 HTML 里写死版本号（以前写死过一个
 # v1.5.1，升到 1.6.0 之后页面上还挂着旧的）。
-APP_VER = "1.0.7"
+APP_VER = "1.0.8"
 APP_MANIFEST_NAME = "manifest"
 
 
@@ -92,8 +92,6 @@ def board_model():
 ETC_SATA_LED = os.environ.get("S2_ETC_SATA_LED", "/etc/sata-led.conf")
 APP_CONF_DIR = os.environ.get("S2_APP_CONF_DIR", "/etc/s2hwctl")
 NATIVE = s2native.Native()
-NATIVE_ENABLED = NATIVE.capabilities()["ready"] or s2native.read(os.path.join(APP_CONF_DIR, "backend")) == "native"
-ETC_FAN = os.environ.get("S2_ETC_FAN", os.path.join(APP_CONF_DIR, "fan.conf") if NATIVE_ENABLED else "/etc/fan-control.conf")
 APP_BEEP_CONF = os.path.join(APP_CONF_DIR, "beep.conf")
 LED_OVERRIDE_CONF = os.path.join(APP_CONF_DIR, "led-override.conf")
 APP_SCHED_CONF = os.environ.get("S2_SCHED_CONF", "/etc/s2-power-schedule.conf")
@@ -102,9 +100,6 @@ VAR_DIR = os.environ.get("S2_VAR_DIR", "/var/apps/fnOS-S2/var")
 SCRIPTS_DIR = os.path.join(VAR_DIR, "scripts")
 SHARE_SCRIPTS = os.environ.get("TRIM_DATA_SHARE_PATHS", "").split(":")[0]
 
-FAN_RUN_DIR = os.environ.get("S2_FAN_RUN_DIR", "/run/fnos-s2-native" if NATIVE_ENABLED else "/var/lib/fan-control")
-FAN_STATUS = os.path.join(FAN_RUN_DIR, "status")
-
 LED_DIR = os.environ.get("S2_LED_DIR", "/sys/class/leds")
 BUZZER_SYSFS = os.environ.get("S2_BUZZER_SYSFS", "/sys/devices/platform/gpio_ctrl/buzzer_gpio")
 GPIO_BEEPER = 18
@@ -112,14 +107,50 @@ SCHED_APPLY_BIN = os.environ.get("S2_SCHED_APPLY_BIN", "/usr/local/sbin/s2-power
 POWER_LED_STATUS_BIN = os.environ.get("S2_POWER_LED_STATUS_BIN",
                                       "/usr/local/sbin/power-led-net.sh")
 
-HW_SERVICES = [
+LEGACY_SERVICES = [
     "fan-control", "sata-led-manager", "power-led-net",
     "power-key-daemon", "random-mac", "set-hostname",
     "selfheal", "boot-version-guard",
     "s2-power-schedule",
 ]
-if NATIVE_ENABLED:
-    HW_SERVICES = [s2native.SERVICE, "s2-power-schedule"]
+
+
+def _backend_is_native():
+    return NATIVE.capabilities()["ready"] or s2native.read(os.path.join(APP_CONF_DIR, "backend")) == "native"
+
+
+def _select_backend(native):
+    """Every path that differs between the native daemon and the legacy fan-control.sh."""
+    global NATIVE_ENABLED, ETC_FAN, FAN_RUN_DIR, FAN_STATUS, FAN_FORCE, FAN_RELOAD, FAN_MANUAL, HW_SERVICES
+    NATIVE_ENABLED = native
+    ETC_FAN = os.environ.get("S2_ETC_FAN", os.path.join(APP_CONF_DIR, "fan.conf") if native else "/etc/fan-control.conf")
+    FAN_RUN_DIR = os.environ.get("S2_FAN_RUN_DIR", "/run/fnos-s2-native" if native else "/var/lib/fan-control")
+    FAN_STATUS = os.path.join(FAN_RUN_DIR, "status")
+    FAN_FORCE = os.path.join(FAN_RUN_DIR, "force_until")
+    FAN_RELOAD = os.path.join(FAN_RUN_DIR, "reload")
+    FAN_MANUAL = os.path.join(FAN_RUN_DIR, "manual_duty")
+    HW_SERVICES = [s2native.SERVICE, "s2-power-schedule"] if native else list(LEGACY_SERVICES)
+
+
+_select_backend(_backend_is_native())
+_BACKEND_CHECKED = 0.0
+
+
+def refresh_backend():
+    """The console can start before pwm-fan binds or before activation writes the backend marker.
+    Deciding only at import would leave it writing fan commands to the legacy controller's
+    directory for the whole process lifetime, where the native daemon never reads them."""
+    global _BACKEND_CHECKED
+    if NATIVE_ENABLED:
+        return
+    now = time.monotonic()
+    if now - _BACKEND_CHECKED < 10:
+        return
+    _BACKEND_CHECKED = now
+    if _backend_is_native():
+        _select_backend(True)
+        _KV_CACHE.clear()
+        bust_services_cache()
 
 # 服务名 / LED 名白名单：只允许 systemd 与 sysfs 合法字符
 SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
@@ -338,12 +369,14 @@ _SVC_CACHE = {}
 _SVC_CACHE_LOCK = threading.Lock()
 _SVC_FETCH_LOCK = threading.Lock()   # 同一时刻只跑一个 systemctl show，其余请求等它的结果
 _SVC_CACHE_TTL = 25
+_SVC_GENERATION = [0]
 
 
 def bust_services_cache():
     """服务状态被写操作改变后调用：清空缓存，下一次查询强制重新 systemctl show。"""
     with _SVC_CACHE_LOCK:
         _SVC_CACHE.clear()
+        _SVC_GENERATION[0] += 1
 
 
 def _norm_unit(n):
@@ -411,6 +444,7 @@ def services_state(names):
         if not stale:
             return res
         now = time.time()
+        generation = _SVC_GENERATION[0]
         # 显式补 .service：systemctl 对裸名会自己补后缀，但那是它内部的行为，
         # 不同版本对 show 的处理不完全一致，我们自己写死更稳。
         units = [n if "." in n else n + ".service" for n in stale]
@@ -431,9 +465,12 @@ def services_state(names):
                     fresh[n] = "unknown"
                     continue
                 fresh[n] = _classify(info["ActiveState"], info["Type"], info["Result"])
+        # 查询途中有写操作清过缓存：这份结果可能是改动前的，只还给本次调用，不进缓存。
+        # 超时 / 报错的结果（全是「未知」）同样不缓存，下一次再查。
         with _SVC_CACHE_LOCK:
-            for n, v in fresh.items():
-                _SVC_CACHE[n] = (now, v)
+            if rc in (0, 127) and generation == _SVC_GENERATION[0]:
+                for n, v in fresh.items():
+                    _SVC_CACHE[n] = (now, v)
     res.update(fresh)
     return res
 
@@ -948,6 +985,7 @@ def collect_sensor():
 
     前端 10 秒轮询走这个端点，配置类信息走 /api/state。
     """
+    refresh_backend()
     fan_status = fan_snapshot()
     led_ovr = read_kv(LED_OVERRIDE_CONF)
     st = {
@@ -1049,6 +1087,7 @@ def _collect_sys_fields():
 
 
 def collect_status():
+    refresh_backend()
     fan_status = fan_snapshot()
     # /proc/uptime 形如 "123456.78 987654.32"，只取开机秒数；读一次复用，别读两遍
     _up = sysfs_read("/proc/uptime", "").split() or _uptime_fallback()
@@ -1718,9 +1757,6 @@ def _fan_script_has(marker):
 
 
 FAN_SCRIPT = os.environ.get("S2_FAN_SCRIPT", "/usr/local/bin/fan-control.sh")
-FAN_FORCE = os.path.join(FAN_RUN_DIR, "force_until")
-FAN_RELOAD = os.path.join(FAN_RUN_DIR, "reload")
-FAN_MANUAL = os.path.join(FAN_RUN_DIR, "manual_duty")
 
 
 def _clear_fan_manual():
@@ -1756,7 +1792,7 @@ def op_fan_manual(params):
         os.replace(tmp, FAN_MANUAL)
     except OSError as e:
         return False, msg_detail("写入手动转速失败", str(e))
-    return True, "风扇已设为手动 %d%%，约 2 秒内生效；超温时仍会自动全速" % duty
+    return True, "风扇已设为手动 %d%%；温度偏高时仍按曲线提速" % duty
 
 
 def legacy_controller_available():
@@ -1766,6 +1802,7 @@ def legacy_controller_available():
 def apply_native_settings(message):
     if not NATIVE.capabilities()["ready"]:
         return False, NATIVE.capabilities()["detail"]
+    bust_services_cache()   # 写风扇指令前必须看服务的当前状态，不能信 25 秒内的缓存
     if service_active(s2native.SERVICE) != "active":
         ok, detail = restart_service(s2native.SERVICE)
         if not ok: return False, message + "，原生硬件服务未启动，请查看诊断"
@@ -1904,6 +1941,7 @@ OPS = {
 
 
 def dispatch(op, params):
+    refresh_backend()
     if op in s2hardware.OPS:
         return s2hardware.dispatch(_sys.modules[__name__], op, params)
     fn = OPS.get(op)

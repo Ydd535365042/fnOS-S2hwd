@@ -135,17 +135,20 @@ class Deployment(Activation):
             if path.is_symlink() or not path.is_file() or digest(path) != known: continue
             archive.mkdir(exist_ok=True)
             destination = archive/name
-            if destination.exists() and destination.read_bytes() != path.read_bytes():
+            if destination.exists() and digest(destination) != digest(path):
                 destination = archive/(path.stem + "-" + known[:10] + path.suffix)
             if not destination.exists(): s2dtb.atomic(destination, path.read_bytes())
-            if destination.read_bytes() == path.read_bytes(): path.unlink()
+            if digest(destination) == digest(path): path.unlink()
         # Bring back user-edited scripts that earlier upgrades archived.
         if archive.is_dir():
             for old in archive.iterdir():
                 if old.is_symlink() or not old.is_file() or old.suffix not in (".sh", ".run") or old.name in current: continue
                 if retired.get(old.name) == digest(old) or (directory/old.name).exists(): continue
-                if re.search(r"-[0-9a-f]{10}$", old.stem): continue
+                renamed = re.fullmatch(r"(.+)-([0-9a-f]{10})", old.stem)
+                # Hash-suffixed copies of defaults were made by earlier migrations, not by the user.
+                if renamed and (renamed[1] + old.suffix in current or retired.get(renamed[1] + old.suffix, "").startswith(renamed[2])): continue
                 s2dtb.atomic(directory/old.name, old.read_bytes()); os.chmod(directory/old.name, 0o755)
+                old.unlink()  # otherwise a script the user deletes later would come back on every upgrade
         for name in sorted(current):
             target = directory/name
             if target.exists() or target.is_symlink(): continue
