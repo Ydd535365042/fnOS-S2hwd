@@ -1657,6 +1657,23 @@
   let fanTesting = false;   // 「全速 10 秒」进行中：挡住重复点击
   let fanTestGrace = 0, fanTestUntil = 0;
   let fanManualTarget = null;   // 正在拖 / 刚设的手动目标值：设备确认之前读数先按它显示
+  let fanAutoPending = false;   // 刚点了「恢复自动」、设备还在报手动：先按预估的自动转速显示
+
+  /* 控制器在自动模式下会给出的转速，与 s2native.fan_tick 同一套规则：两路曲线取高、
+     降温 2℃ 回差内保持起转转速、硬盘温度读不到时保底 30%。点「恢复自动」后先按它显示，
+     读数不会先跳回手动值、等下一次采样才变过去。 */
+  function autoDutyGuess(s) {
+    const cpu = num(s.cpu_temp), hdd = num(s.hdd_max_temp) || null;
+    let duty = Math.max(curveDuty(cpu, fanCurve.cpu) || 0, curveDuty(hdd, fanCurve.hdd) || 0);
+    if (!duty && (num(s.fan_duty) || 0) > 0) {
+      const near = [["cpu", cpu], ["hdd", hdd]]
+        .filter(([k, t]) => t !== null && curveDuty(t + 2, fanCurve[k]) > 0)
+        .map(([k]) => fanCurve[k].d1);
+      if (near.length) duty = Math.max(...near);
+    }
+    if (s.fan_source === "unknown") duty = Math.max(duty, 30);
+    return duty;
+  }
 
   // /api/state 的 conf.fan（KEY=VALUE 字符串）→ {hdd, cpu} 曲线；缺的格子用出厂值，硬盘 T4 夹到上限
   function curveFromConf(fan) {
@@ -1759,7 +1776,7 @@
     const hddD = curveDuty(hdd, fanCurve.hdd) || 0;
     if (!cpuD && !hddD) {
       // 两路都没到起转点却在转：硬盘温度读不到时保底转速，或降温时的 2℃ 回差
-      if (duty > 0) return s.fan_source === "unknown" ? "硬盘温度未知 · 保底 " + duty + "%" : "降温回差 · 保持 " + duty + "%";
+      if (duty > 0) return s.fan_source === "unknown" ? "硬盘温度未知 · 保底转速" : "降温回差 · 保持起转转速";
       return "未达起转温度";
     }
     const by = cpuD >= hddD ? "处理器" : "硬盘";
@@ -1777,6 +1794,10 @@
     if (fanManualTarget !== null && (fanManualBusy || Date.now() < fanManualHold) && sensor.fan_mode !== "protect" && sensor.fan_mode !== "test"
         && num(sensor.fan_manual) !== fanManualTarget) {
       sensor = Object.assign({}, sensor, { fan_duty: fanManualTarget, fan_mode: "manual", fan_manual: String(fanManualTarget) });
+    }
+    if (fanAutoPending) {
+      if (sensor.fan_mode !== "manual" || Date.now() > fanManualHold) fanAutoPending = false;
+      else sensor = Object.assign({}, sensor, { fan_mode: "auto", fan_manual: "", fan_duty: autoDutyGuess(sensor) });
     }
     const duty = num(sensor.fan_duty);
     const cpu = num(sensor.cpu_temp);
@@ -2068,18 +2089,17 @@
   const FAN_MANUAL_MIN = 30;
   let fanManualOn = false, fanManualHold = 0, fanManualWant = null, fanManualSent = null, fanManualBusy = false, fanManualSentAt = 0;
   // 轨道的填充长度由 --p 决定（全站滑块共用的样式），值一变就要跟着写
-  function paintFanSlider() {
-    fanSlider.style.setProperty("--p", fanSlider.value + "%");
-  }
   function showFanManual(on, duty) {
     fanManualOn = on;
     fanManualBox.classList.toggle("is-on", on);
     // 「恢复自动」一直在原位，自动时只是置灰：按钮和数字的位置固定，轨道宽度才不会变
     fanAutoBtn.disabled = !on;
     if (on && duty !== null && duty !== undefined) fanSlider.value = duty;
-    paintFanSlider();
-    // 百分比只在这一格显示，永远是数字、等宽右对齐：不在「自动」和数字之间来回换，也不在别处重复
-    fanSliderVal.textContent = fanSlider.value + "%";
+    // 滑块只表示「手动设了多少」：手动时轨道填到设定值、这一格写百分比；
+    // 自动时轨道不填色、圆点变灰、这一格写「自动」，也不跟着实际转速动 ——
+    // 实际转速只看上面的大数字和转速条，两样东西不混在一起
+    fanSlider.style.setProperty("--p", on ? fanSlider.value + "%" : "0%");
+    fanSliderVal.textContent = on ? fanSlider.value + "%" : "自动";
   }
   function syncFanManual(sensor) {
     const usable = sensor.fan_manual_ok !== false && !(S2.access && S2.access.danger === false);
@@ -2094,8 +2114,6 @@
     if (Date.now() < fanManualHold || fanManualBusy) return;
     const manual = num(sensor.fan_manual);
     const on = sensor.fan_mode === "manual" || (manual !== null && manual >= FAN_MANUAL_MIN);
-    // 自动时滑块停在当前实际转速上，拖动就是从现在的转速起调
-    if (!on) fanSlider.value = Math.max(0, Math.min(100, num(sensor.fan_duty) || 0));
     showFanManual(on, manual);
   }
   // 发送泵：同一时刻只有一条请求在路上，回来后如果目标值又变了就再发一条
@@ -2129,8 +2147,9 @@
     }
     clearTimeout(fanFollowTimer);
     let n = 0;
-    const tick = () => { if (++n > 3 || document.hidden) return; pollSensorOnly(); fanFollowTimer = setTimeout(tick, 1000); };
-    fanFollowTimer = setTimeout(tick, 600);
+    // 控制器 0.25 秒内执行并写出新状态：很快拉一次确认，之后再跟两次
+    const tick = () => { if (++n > 4 || document.hidden) return; pollSensorOnly(); fanFollowTimer = setTimeout(tick, 600); };
+    fanFollowTimer = setTimeout(tick, 400);
   }
   function setFanManual(want) {
     fanManualWant = want;
@@ -2138,7 +2157,11 @@
     fanManualHold = Date.now() + 5000;
     if (want === AUTO) {
       showFanManual(false);
+      const s = S2.sensor || {};
+      applyFanReading(Object.assign({}, s, { fan_mode: "auto", fan_manual: "", fan_duty: autoDutyGuess(s) }));
+      fanAutoPending = true;
     } else {
+      fanAutoPending = false;
       showFanManual(true, want);
       applyFanReading(Object.assign({}, S2.sensor || {}, { fan_duty: want, fan_mode: "manual", fan_manual: String(want) }));
     }

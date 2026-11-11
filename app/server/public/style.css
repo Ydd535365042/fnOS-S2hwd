@@ -370,6 +370,11 @@ button:focus:not(:focus-visible),.seg button:focus:not(:focus-visible),.nav-item
 .fan-manual output{font-variant-numeric:tabular-nums;text-align:right;color:var(--fg);font-weight:600;white-space:nowrap}
 .fan-manual input[type=range]{width:100%;min-width:0;height:28px;margin:0;cursor:pointer;touch-action:pan-y}
 .fan-manual input[type=range]:disabled{cursor:not-allowed;opacity:.5}
+/* 自动时滑块只是「拖它就进入手动」的入口：不填色、圆点变灰，不表示任何当前值 */
+.fan-manual:not(.is-on) input[type=range]::-webkit-slider-thumb{border-color:var(--line-2)}
+.fan-manual:not(.is-on) input[type=range]::-moz-range-thumb{border-color:var(--line-2)}
+.fan-manual:not(.is-on) input[type=range]::-moz-range-progress{background:transparent}
+.fan-manual:not(.is-on) output{color:var(--muted);font-weight:500}
 .flip-front>.help:last-child{margin-top:auto}
 .fan-svg{flex:none;width:48px;height:48px}
 .fan-svg .ring{fill:none;stroke:var(--line-2);stroke-width:2}
